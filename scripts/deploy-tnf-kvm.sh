@@ -745,8 +745,35 @@ if [[ -f "${KUBECONFIG}" ]]; then
   ${OC} get nodes -o wide 2>/dev/null || true
   ${OC} get co 2>/dev/null | head -15 || true
   echo ""
-  ok "KUBECONFIG: ${KUBECONFIG}"
-  ok "Console:    https://console-openshift-console.apps.${CLUSTER_NAME}.example.com"
+
+  # Derive actual base domain from cluster.yml
+  BASE_DOMAIN=$(yq -r '.base_domain' "${CLUSTER_YML}" 2>/dev/null || echo "example.com")
+
   KUBEADMIN_PASS="${ASSET_DIR}/auth/kubeadmin-password"
-  [[ -f "${KUBEADMIN_PASS}" ]] && ok "kubeadmin password: $(cat ${KUBEADMIN_PASS})"
+  CREDS_FILE="${ACTUAL_HOME}/cluster-credentials.txt"
+
+  # Write a credentials summary to ~/cluster-credentials.txt (never print password to stdout)
+  cat > "${CREDS_FILE}" <<EOFCREDS
+============================================================
+ OpenShift Cluster Credentials — ${CLUSTER_NAME}.${BASE_DOMAIN}
+ Generated: $(date)
+============================================================
+ API URL  : https://api.${CLUSTER_NAME}.${BASE_DOMAIN}:6443
+ Console  : https://console-openshift-console.apps.${CLUSTER_NAME}.${BASE_DOMAIN}
+ KUBECONFIG: ${KUBECONFIG}
+
+ Username : kubeadmin
+ Password : $(cat "${KUBEADMIN_PASS}" 2>/dev/null || echo "<see ${KUBEADMIN_PASS}>")
+
+⚠  Rotate kubeadmin credentials after first login.
+   oc create secret generic kubeadmin ... OR disable via identity provider.
+============================================================
+EOFCREDS
+  chown "${ACTUAL_USER}:${ACTUAL_USER}" "${CREDS_FILE}"
+  chmod 600 "${CREDS_FILE}"
+
+  ok "KUBECONFIG : ${KUBECONFIG}"
+  ok "Console   : https://console-openshift-console.apps.${CLUSTER_NAME}.${BASE_DOMAIN}"
+  ok "API       : https://api.${CLUSTER_NAME}.${BASE_DOMAIN}:6443"
+  ok "Credentials saved → ${CREDS_FILE}  (password NOT echoed to terminal)"
 fi
