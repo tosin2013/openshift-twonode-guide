@@ -1,0 +1,74 @@
+# cluster.yml — Two-Node OpenShift 4.22 with Fencing (TNF)
+# IBM Cloud KVM deployment via openshift-agent-install framework
+#
+# Network: VyOS VLAN 1924 → 192.168.49.0/24
+# API VIP : 192.168.49.253  (floats between nodes, managed by keepalived)
+# App VIP : 192.168.49.252  (ingress, floats between nodes)
+# Node 1  : 192.168.49.21   (openshift-node1)
+# Node 2  : 192.168.49.22   (openshift-node2)
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+use_site_configs: false
+pull_secret_path: ~/pull-secret.json
+ssh_public_key_path: ~/.ssh/openshift-twonode-ed25519.pub
+
+# ── Cluster identity ─────────────────────────────────────────────────────────
+cluster_name: twonode
+base_domain: example.com
+
+# ── OpenShift version ────────────────────────────────────────────────────────
+# Used by hack/create-iso.sh to download matching binaries into ./bin/
+ocp_version: "4.22"
+
+# ── Topology ─────────────────────────────────────────────────────────────────
+platform_type: baremetal
+control_plane_replicas: 2
+app_node_replicas: 0
+
+# TNF (Two-Node with Fencing) requires TechPreviewNoUpgrade.
+# This is injected into install-config.yaml by the playbook template.
+# WARNING: clusters with this featureSet cannot be upgraded in place.
+feature_set: TechPreviewNoUpgrade
+
+# ── Networking ───────────────────────────────────────────────────────────────
+# OVNKubernetes is required for TNF topology.
+network_type: OVNKubernetes
+
+# VIPs — free IPs within the VyOS VLAN 1924 subnet
+api_vips:
+  - 192.168.49.253
+
+app_vips:
+  - 192.168.49.252
+
+# Machine network — VyOS VLAN 1924
+machine_network_cidrs:
+  - 192.168.49.0/24
+
+# Pod overlay network
+cluster_network_cidr: 10.128.0.0/14
+cluster_network_host_prefix: 23
+
+# Service network
+service_network_cidrs:
+  - 172.30.0.0/16
+
+# Rendezvous node — node1 acts as the bootstrap pivot
+rendezvous_ip: 192.168.49.21
+
+# ── DNS ───────────────────────────────────────────────────────────────────────
+# VyOS VLAN 1924 gateway — it forwards cluster DNS to host dnsmasq (<HOST-PRIVATE-IP>)
+dns_servers:
+  - 192.168.49.1
+
+dns_search_domains:
+  - twonode.example.com
+  - example.com
+
+# ── NTP ───────────────────────────────────────────────────────────────────────
+ntp_servers:
+  - 0.rhel.pool.ntp.org
+  - 1.rhel.pool.ntp.org
+
+# ── Optional flags ────────────────────────────────────────────────────────────
+create_ztp_manifests: false
