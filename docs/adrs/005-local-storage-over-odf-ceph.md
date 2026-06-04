@@ -61,9 +61,9 @@ The repository will **not** use ODF/Ceph as the default storage recommendation. 
 ## Implementation Plan
 
 1. Deploy LVM Operator in `docs/deployment-guide.md` post-install validation section.
-2. In `demos/02-database-ha/`, use a `StorageClass` backed by LVM Operator. Document node-affinity behavior and explain why the pod follows the surviving node on drain.
-3. In `demos/02-database-ha/README.md`, include a clear "Storage Architecture Note" section explaining why ODF is not used and what the data-loss risk is for hard failure without replication.
-4. In `demos/05-drbd-edge-storage/README.md`, include a prominent "Developer Preview Warning" section listing all unsupported features.
+2. In `docs/demos/02-database-ha/`, use a `StorageClass` backed by LVM Operator. Document node-affinity behavior and explain why the pod follows the surviving node on drain.
+3. In `docs/demos/02-database-ha/README.md`, include a clear "Storage Architecture Note" section explaining why ODF is not used and what the data-loss risk is for hard failure without replication.
+4. In `docs/demos/05-drbd-edge-storage/README.md`, include a prominent "Developer Preview Warning" section listing all unsupported features.
 5. Add a disk latency troubleshooting entry in `docs/troubleshooting.md`.
 
 ## Related PRD Sections

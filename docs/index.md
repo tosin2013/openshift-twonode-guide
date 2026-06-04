@@ -1,4 +1,4 @@
-# openshift-twonode-guide
+# Two-Node OpenShift Guide
 
 A bare-metal-first guide for deploying a **Two-Node OpenShift 4.22** cluster using the Agent-Based Installer (ABI), with a complete suite of post-deployment edge workload demos. This repository is a standalone replacement for Module 3 of the [retail-edge-ha-workshop](https://github.com/tosin2013/retail-edge-ha-workshop), providing a stable, hardware-backed path that eliminates the fragility of the original nested KubeVirt approach.
 
@@ -6,23 +6,23 @@ A bare-metal-first guide for deploying a **Two-Node OpenShift 4.22** cluster usi
 
 | Component | Description |
 |---|---|
-| [Architecture Guide](docs/architecture.md) | TNF vs TNA topology decisions, Pacemaker/STONITH, etcd-outside-cluster model |
-| [Deployment Guide](docs/deployment-guide.md) | Step-by-step ABI deployment for bare metal and KVM environments |
-| [Troubleshooting Guide](docs/troubleshooting.md) | Common failure modes and remediation |
-| [Configuration Templates](examples/two-node-fencing/) | Ready-to-use `cluster.yml` and `nodes.yml` for `openshift-agent-install` |
-| [Demo 1: Fencing Validation](docs/demos/01-fencing-validation/) | HA chaos test — hard node failure + Pacemaker STONITH |
-| [Demo 2: Database HA](docs/demos/02-database-ha/) | PostgreSQL StatefulSet survives planned and unplanned node failure |
-| [Demo 3: OpenShift Virtualization](docs/demos/03-openshift-virtualization/) | Legacy VM HA on a two-node cluster |
-| [Demo 4: Edge AI Inference](docs/demos/04-edge-ai-inference/) | Lightweight object detection inference at the edge |
-| [Demo 5: DRBD Edge Storage](docs/demos/05-drbd-edge-storage/) | Replicated block storage via ODF + DRBD (Developer Preview) |
+| [Architecture Guide](architecture.md) | TNF vs TNA topology decisions, Pacemaker/STONITH, etcd-outside-cluster model |
+| [Deployment Guide](deployment-guide.md) | Step-by-step ABI deployment for bare metal and KVM environments |
+| [Troubleshooting Guide](troubleshooting.md) | Common failure modes and remediation |
+| [Configuration Templates](https://github.com/tosin2013/openshift-twonode-guide/tree/main/examples/two-node-fencing) | Ready-to-use `cluster.yml` and `nodes.yml` for `openshift-agent-install` |
+| [Demo 1: Fencing Validation](demos/01-fencing-validation/README.md) | HA chaos test — hard node failure + Pacemaker STONITH |
+| [Demo 2: Database HA](demos/02-database-ha/README.md) | PostgreSQL StatefulSet survives planned and unplanned node failure |
+| [Demo 3: OpenShift Virtualization](demos/03-openshift-virtualization/README.md) | Legacy VM HA on a two-node cluster |
+| [Demo 4: Edge AI Inference](demos/04-edge-ai-inference/README.md) | Lightweight object detection inference at the edge |
+| [Demo 5: DRBD Edge Storage](demos/05-drbd-edge-storage/README.md) | Replicated block storage via ODF + DRBD (Developer Preview) |
 
 ## Validated Deployment
 
 This guide has been end-to-end validated on OCP 4.22 in a KVM environment on IBM Cloud:
 
-![OpenShift Console — both nodes Ready](docs/assets/console-nodes-ready.png)
+![OpenShift Console — both nodes Ready](assets/console-nodes-ready.png)
 
-Both control-plane nodes `Ready`, all 35 cluster operators `Available`, Pacemaker fencing active. See [docs/kvm-developer-guide.md](docs/kvm-developer-guide.md) for the full IBM Cloud deployment walkthrough.
+Both control-plane nodes `Ready`, all 35 cluster operators `Available`, Pacemaker fencing active. See [kvm-developer-guide.md](kvm-developer-guide.md) for the full IBM Cloud deployment walkthrough.
 
 ## Architecture in 60 Seconds
 
@@ -32,7 +32,7 @@ This repository targets the **Two-Node with Fencing (TNF)** topology: exactly tw
 - **STONITH via Redfish BMC** (`fence_redfish`) — when a node fails, Pacemaker powers it off via its BMC before the surviving node takes over, preventing split-brain
 - **etcd running as a Podman container** outside the OpenShift pod lifecycle, managed by Pacemaker — the surviving node promotes etcd to a single-member cluster until the fenced node recovers
 
-For a full explanation including the TNF vs TNA comparison, see [docs/architecture.md](docs/architecture.md).
+For a full explanation including the TNF vs TNA comparison, see [architecture.md](architecture.md).
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ vi cluster.yml
 vi nodes.yml
 ```
 
-See [docs/deployment-guide.md](docs/deployment-guide.md) for the full parameter reference.
+See [deployment-guide.md](deployment-guide.md) for the full parameter reference.
 
 ### 3. Generate manifests and create the installation ISO
 
@@ -94,14 +94,14 @@ oc get clusteroperators
 pcs status          # SSH to either node to verify Pacemaker cluster health
 ```
 
-For detailed post-install validation including etcd and Pacemaker checks, see [docs/deployment-guide.md#post-install-validation](docs/deployment-guide.md).
+For detailed post-install validation including etcd and Pacemaker checks, see [deployment-guide.md](deployment-guide.md).
 
 ## Running the Demos
 
 The demos are designed to be run sequentially (each builds on a healthy cluster from the previous), but each is also independently executable.
 
 ```
-demos/
+docs/demos/
 ├── 01-fencing-validation/   ← Start here — proves the cluster's HA foundation works
 ├── 02-database-ha/          ← Stateful PostgreSQL workload through planned and unplanned failure
 ├── 03-openshift-virtualization/  ← Legacy VM HA alongside containers
@@ -115,14 +115,15 @@ Each demo directory contains a `README.md` with objectives, prerequisites, step-
 
 You do not need physical bare-metal servers to work with this repository. Using KVM with `sushy-tools` as a Redfish emulator, you can run the full deployment and all demos on a single host machine. The automated deployment script handles everything end-to-end — including the IBM Cloud NAT path, Route53 DNS, HAProxy, and an etcd quorum recovery step that resolves a deterministic 2-node bootstrap race condition.
 
-See **[docs/kvm-developer-guide.md](docs/kvm-developer-guide.md)** for the full step-by-step guide.
+See **[kvm-developer-guide.md](kvm-developer-guide.md)** for the full step-by-step guide.
 
 ```bash
 # One-command deployment (IBM Cloud KVM path)
 sudo bash scripts/deploy-tnf-kvm.sh
 ```
 
-> **Required host resources**: 32 GB RAM minimum (64 GB recommended), 400 GB free disk, CPU with VT-x/AMD-V.
+!!! note "Required host resources"
+    32 GB RAM minimum (64 GB recommended), 400 GB free disk, CPU with VT-x/AMD-V.
 
 ## Upstream Dependencies
 
@@ -134,17 +135,17 @@ sudo bash scripts/deploy-tnf-kvm.sh
 
 ## Architecture Decisions
 
-Key decisions made in this repository are documented as Architecture Decision Records in [`docs/adrs/`](docs/adrs/):
+Key decisions made in this repository are documented as Architecture Decision Records in [`adrs/`](adrs/001-tnf-topology-selection.md):
 
 | ADR | Decision |
 |---|---|
-| [ADR-001](docs/adrs/001-tnf-topology-selection.md) | TNF topology selected over TNA |
-| [ADR-002](docs/adrs/002-agent-based-installer.md) | Agent-Based Installer via `openshift-agent-install` |
-| [ADR-003](docs/adrs/003-bmc-redfish-fencing-strategy.md) | `fence_redfish` for bare metal, `sushy-tools` for KVM |
-| [ADR-004](docs/adrs/004-etcd-outside-cluster.md) | etcd managed by Pacemaker outside the cluster |
-| [ADR-005](docs/adrs/005-local-storage-over-odf-ceph.md) | LVM/TopoLVM for storage; ODF+DRBD is Developer Preview only |
-| [ADR-006](docs/adrs/006-ovnkubernetes-network-plugin.md) | OVNKubernetes required for TNF |
-| [ADR-007](docs/adrs/007-kvm-sushy-tools-dev-environment.md) | KVM + sushy-tools for development parity |
+| [ADR-001](adrs/001-tnf-topology-selection.md) | TNF topology selected over TNA |
+| [ADR-002](adrs/002-agent-based-installer.md) | Agent-Based Installer via `openshift-agent-install` |
+| [ADR-003](adrs/003-bmc-redfish-fencing-strategy.md) | `fence_redfish` for bare metal, `sushy-tools` for KVM |
+| [ADR-004](adrs/004-etcd-outside-cluster.md) | etcd managed by Pacemaker outside the cluster |
+| [ADR-005](adrs/005-local-storage-over-odf-ceph.md) | LVM/TopoLVM for storage; ODF+DRBD is Developer Preview only |
+| [ADR-006](adrs/006-ovnkubernetes-network-plugin.md) | OVNKubernetes required for TNF |
+| [ADR-007](adrs/007-kvm-sushy-tools-dev-environment.md) | KVM + sushy-tools for development parity |
 
 ## Target Audience
 
@@ -154,4 +155,4 @@ Key decisions made in this repository are documented as Architecture Decision Re
 
 ## OpenShift Version
 
-This guide targets **OpenShift Container Platform 4.22** with the TNF topology (Technology Preview). The `featureSet: TechPreviewNoUpgrade` flag is required and means upgrade requires reinstallation. For a production-ready, upgradable path on 3 nodes, see the TNA topology note in [docs/architecture.md](docs/architecture.md).
+This guide targets **OpenShift Container Platform 4.22** with the TNF topology (Technology Preview). The `featureSet: TechPreviewNoUpgrade` flag is required and means upgrade requires reinstallation. For a production-ready, upgradable path on 3 nodes, see the TNA topology note in [architecture.md](architecture.md).

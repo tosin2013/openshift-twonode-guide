@@ -49,7 +49,7 @@ This unified approach means:
 ## Domain Considerations
 
 - **Pacemaker resource configuration**: The `stonith:fence_redfish` resource must be created with correct `pcmk_host_map` entries and `power_timeout` / `login_timeout` values that account for real BMC latency.
-- **Fencing validation**: The `demos/01-fencing-validation/` scenario uses `fence_redfish` directly (as a manual test) before validating that Pacemaker triggers it automatically. This two-step validation is critical.
+- **Fencing validation**: The `docs/demos/01-fencing-validation/` scenario uses `fence_redfish` directly (as a manual test) before validating that Pacemaker triggers it automatically. This two-step validation is critical.
 - **Network segmentation**: In production, the BMC network (IPMI/Redfish) is typically isolated from the cluster network. The deployment guide must document that Pacemaker needs routed access to the BMC network from within the node OS.
 
 ## Implementation Plan
@@ -58,7 +58,7 @@ This unified approach means:
 2. Provide sushy-tools systemd service configuration or container run command.
 3. Document `fence_redfish` STONITH resource creation commands for both bare-metal and KVM environments.
 4. Include BMC connectivity validation steps in the pre-deployment checklist.
-5. In `demos/01-fencing-validation/`, include a manual `fence_redfish` test before the automated Pacemaker test.
+5. In `docs/demos/01-fencing-validation/`, include a manual `fence_redfish` test before the automated Pacemaker test.
 6. Document fencing timeout tuning parameters in `docs/troubleshooting.md`.
 
 ## Related PRD Sections

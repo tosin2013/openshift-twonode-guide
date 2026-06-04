@@ -10,7 +10,7 @@ This demo is the core proof-of-concept for the entire TNF architecture and direc
 
 ## Prerequisites
 
-- A deployed Two-Node OpenShift 4.22 TNF cluster (see [KVM Developer Guide](../../docs/kvm-developer-guide.md))
+- A deployed Two-Node OpenShift 4.22 TNF cluster (see [KVM Developer Guide](../../kvm-developer-guide.md))
 - `oc` CLI configured with `KUBECONFIG` pointing to the cluster
 - SSH access to both nodes (`core` user, key `~/.ssh/openshift-twonode-ed25519`)
 - `fence_redfish` installed on the bastion host (installed by `scripts/bootstrap.sh`)

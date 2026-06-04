@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - Completed [Demo 1](../01-fencing-validation/README.md) or a healthy two-node cluster
-- LVM Operator deployed and a `StorageClass` available (see [deployment guide](../../docs/deployment-guide.md#84-lvm-operator))
+- LVM Operator deployed and a `StorageClass` available (see [deployment guide](../../deployment-guide.md#84-lvm-operator))
 - `oc` CLI configured
 - `psql` client on the bastion (or use `oc exec` into the PostgreSQL pod)
 

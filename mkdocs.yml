@@ -1,0 +1,77 @@
+site_name: Two-Node OpenShift Guide
+site_url: https://tosin2013.github.io/openshift-twonode-guide
+repo_url: https://github.com/tosin2013/openshift-twonode-guide
+repo_name: tosin2013/openshift-twonode-guide
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: red
+      accent: red
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: red
+      accent: red
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Deployment Guide: deployment-guide.md
+  - KVM Developer Guide: kvm-developer-guide.md
+  - Troubleshooting: troubleshooting.md
+  - Demos:
+      - Overview: demos/index.md
+      - 01 Fencing Validation: demos/01-fencing-validation/README.md
+      - 02 Database HA: demos/02-database-ha/README.md
+      - 03 OpenShift Virtualization: demos/03-openshift-virtualization/README.md
+      - 04 Edge AI Inference: demos/04-edge-ai-inference/README.md
+      - 05 DRBD Edge Storage: demos/05-drbd-edge-storage/README.md
+  - Architecture Decisions:
+      - 001 TNF Topology: adrs/001-tnf-topology-selection.md
+      - 002 Agent-Based Installer: adrs/002-agent-based-installer.md
+      - 003 BMC Redfish Fencing: adrs/003-bmc-redfish-fencing-strategy.md
+      - 004 etcd Outside Cluster: adrs/004-etcd-outside-cluster.md
+      - 005 Local Storage: adrs/005-local-storage-over-odf-ceph.md
+      - 006 OVNKubernetes: adrs/006-ovnkubernetes-network-plugin.md
+      - 007 KVM sushy-tools: adrs/007-kvm-sushy-tools-dev-environment.md
+  - Deployment Records:
+      - Overview: deployments/index.md
+      - IBM Cloud KVM 2026-06-03: deployments/tnf-kvm-ibmcloud-2026-06-03.md
+  - Changelog: changelog.md
