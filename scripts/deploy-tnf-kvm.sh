@@ -58,6 +58,9 @@ SUSHY_PORT="${SUSHY_PORT:-8000}"
 CP_CPU_CORES="${CP_CPU_CORES:-8}"
 CP_RAM_GB="${CP_RAM_GB:-32}"
 DISK_SIZE="${DISK_SIZE:-130}"
+# Set ODF_DISK_SIZE to a non-zero value (GB) to attach a second raw block
+# device (/dev/vdb) to each node for ODF DRBD storage.  0 = disabled.
+ODF_DISK_SIZE="${ODF_DISK_SIZE:-0}"
 LIBVIRT_VM_PATH="${LIBVIRT_VM_PATH:-/var/lib/libvirt/images}"
 
 LIBVIRT_NETWORK="network=1924,model=e1000e"
@@ -102,6 +105,7 @@ if [[ "${DO_DESTROY}" == true ]]; then
     virsh destroy "${node_name}"  2>/dev/null || true
     virsh undefine "${node_name}" 2>/dev/null || true
     rm -f "${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}.qcow2"
+    rm -f "${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
     ok "VM ${node_name} removed"
   done
 
@@ -224,13 +228,26 @@ create_vms() {
     mac1=$(get_mac "${node_name}" "enp1s0")
     mac2=$(get_mac "${node_name}" "enp2s0")
 
-    info "Creating VM ${node_name} (${CP_CPU_CORES} vCPU / ${CP_RAM_GB} GB / ${DISK_SIZE} GB)…"
+    local odf_label=""
+    [[ "${ODF_DISK_SIZE}" -gt 0 ]] && odf_label=" + ${ODF_DISK_SIZE} GB ODF"
+    info "Creating VM ${node_name} (${CP_CPU_CORES} vCPU / ${CP_RAM_GB} GB / ${DISK_SIZE} GB${odf_label})…"
     info "  MAC1=${mac1}  MAC2=${mac2}"
 
-    # Create the disk image first
+    # Create the OS disk image
     local disk_path="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}.qcow2"
     if [[ ! -f "${disk_path}" ]]; then
       qemu-img create -f qcow2 "${disk_path}" "${DISK_SIZE}G"
+    fi
+
+    # Optionally create an ODF data disk (/dev/vdb inside the VM)
+    local odf_disk_arg=""
+    if [[ "${ODF_DISK_SIZE}" -gt 0 ]]; then
+      local odf_disk_path="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
+      if [[ ! -f "${odf_disk_path}" ]]; then
+        qemu-img create -f qcow2 "${odf_disk_path}" "${ODF_DISK_SIZE}G"
+        ok "ODF disk created: ${odf_disk_path} (${ODF_DISK_SIZE} GB)"
+      fi
+      odf_disk_arg="--disk path=${odf_disk_path},cache=none,format=qcow2"
     fi
 
     # Define the VM (--import so virt-install does not require a boot medium,
@@ -240,6 +257,7 @@ create_vms() {
       --memory "$((CP_RAM_GB * 1024))" \
       --vcpus "sockets=1,cores=${CP_CPU_CORES},threads=1" \
       --disk "path=${disk_path},cache=none,format=qcow2" \
+      ${odf_disk_arg:+${odf_disk_arg}} \
       --network "${LIBVIRT_NETWORK},mac=${mac1}" \
       --network "${LIBVIRT_NETWORK},mac=${mac2}" \
       --connect=qemu:///system \
@@ -414,6 +432,13 @@ for idx in "${!NODE_NAMES_ARRAY[@]}"; do
   virsh destroy  "${node_name}" 2>/dev/null || true
   virsh undefine "${node_name}" 2>/dev/null || true
 
+  # Re-attach ODF disk if it was created in Phase 3
+  local odf_disk_arg_p6=""
+  if [[ "${ODF_DISK_SIZE}" -gt 0 ]]; then
+    local odf_disk_path_p6="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
+    [[ -f "${odf_disk_path_p6}" ]] && odf_disk_arg_p6="--disk path=${odf_disk_path_p6},cache=none,format=qcow2"
+  fi
+
   info "Creating ${node_name} with cdrom (boot order: cdrom→disk, UUID: ${node_uuid})…"
   virt-install \
     -n "${node_name}" \
@@ -421,6 +446,7 @@ for idx in "${!NODE_NAMES_ARRAY[@]}"; do
     --memory "$((CP_RAM_GB * 1024))" \
     --vcpus "sockets=1,cores=${CP_CPU_CORES},threads=1" \
     --disk "path=${disk_path},cache=none,format=qcow2" \
+    ${odf_disk_arg_p6:+${odf_disk_arg_p6}} \
     --cdrom "${ISO_PATH}" \
     --network "${LIBVIRT_NETWORK},mac=${mac1}" \
     --network "${LIBVIRT_NETWORK},mac=${mac2}" \
