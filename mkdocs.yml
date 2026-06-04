@@ -9,6 +9,8 @@ theme:
   features:
     - navigation.tabs
     - navigation.sections
+    - navigation.indexes
+    - navigation.expand
     - navigation.top
     - content.code.copy
     - content.code.annotate
@@ -57,7 +59,7 @@ nav:
   - KVM Developer Guide: kvm-developer-guide.md
   - Troubleshooting: troubleshooting.md
   - Demos:
-      - Overview: demos/index.md
+      - demos/index.md
       - 01 Fencing Validation: demos/01-fencing-validation/README.md
       - 02 Database HA: demos/02-database-ha/README.md
       - 03 OpenShift Virtualization: demos/03-openshift-virtualization/README.md
@@ -72,6 +74,6 @@ nav:
       - 006 OVNKubernetes: adrs/006-ovnkubernetes-network-plugin.md
       - 007 KVM sushy-tools: adrs/007-kvm-sushy-tools-dev-environment.md
   - Deployment Records:
-      - Overview: deployments/index.md
+      - deployments/index.md
       - IBM Cloud KVM 2026-06-03: deployments/tnf-kvm-ibmcloud-2026-06-03.md
   - Changelog: changelog.md
