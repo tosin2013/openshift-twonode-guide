@@ -134,14 +134,21 @@ POS_URL="http://$(oc -n fencing-demo get route pos-service -o jsonpath='{.spec.h
 echo "Testing: ${POS_URL}"
 
 # Run a continuous availability check every 2 seconds
+# Shows HTTP status AND which node is currently serving the pod
 while true; do
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${POS_URL}")
-  echo "$(date +%H:%M:%S) — HTTP ${STATUS}"
+  NODE=$(oc -n fencing-demo get pod -l app=pos-service \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || echo "none")
+  echo "$(date +%H:%M:%S) — HTTP ${STATUS} — Pod node: ${NODE}"
   sleep 2
 done
 ```
 
-Leave this running. A healthy response is HTTP 200.
+Leave this running. A healthy response is `HTTP 200`. During failover you will see:
+- `HTTP 000` — node2 is fenced, pod is terminating (~26 seconds)
+- Pod node changes from `openshift-node2` → `openshift-node1` — workload has moved
+- `HTTP 200` returns — recovery complete
 
 ## Step 3: Verify Pre-Fencing State
 
@@ -202,8 +209,11 @@ echo "Node 2 fenced. Watch the monitoring loop in your other terminal."
 Over the next 30-60 seconds, observe:
 
 ### In the monitoring terminal:
+- Pod node shows `openshift-node2` (baseline)
 - HTTP responses briefly show `000` (connection refused/timeout) — ~26 seconds in the validated run
-- HTTP 200 responses resume when the Pod from Node 2 reschedules to Node 1
+- Pod node changes to `none` while the pod is terminating/rescheduling
+- Pod node shows `openshift-node1` — workload has successfully moved
+- HTTP 200 responses resume — recovery complete
 
 ### On Node 1:
 ```bash
