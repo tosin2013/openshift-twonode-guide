@@ -437,9 +437,9 @@ for idx in "${!NODE_NAMES_ARRAY[@]}"; do
   virsh undefine "${node_name}" 2>/dev/null || true
 
   # Re-attach ODF disk if it was created in Phase 3
-  local odf_disk_arg_p6=""
+  odf_disk_arg_p6=""
   if [[ "${ODF_DISK_SIZE}" -gt 0 ]]; then
-    local odf_disk_path_p6="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
+    odf_disk_path_p6="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
     [[ -f "${odf_disk_path_p6}" ]] && odf_disk_arg_p6="--disk path=${odf_disk_path_p6},cache=none,format=qcow2"
   fi
 
