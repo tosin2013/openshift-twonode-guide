@@ -1,0 +1,44 @@
+# StorageCluster for Two-Node ODF with DRBD replication
+# Developer Preview as of ODF 4.16+
+#
+# Prerequisites:
+#   - Both nodes labeled: cluster.ocs.openshift.io/openshift-storage=""
+#   - Each node has a raw block device /dev/vdb (100 GB minimum)
+#   - ODF operator installed and ready
+#
+# Label nodes before applying:
+#   oc label node openshift-node1 cluster.ocs.openshift.io/openshift-storage=""
+#   oc label node openshift-node2 cluster.ocs.openshift.io/openshift-storage=""
+---
+apiVersion: ocs.openshift.io/v1
+kind: StorageCluster
+metadata:
+  name: ocs-storagecluster
+  namespace: openshift-storage
+spec:
+  # Two-node topology — no third node for quorum
+  # DRBD provides synchronous block replication between the two nodes
+  managedResources:
+    cephBlockPools:
+      reconcileStrategy: ignore
+    cephFilesystems:
+      reconcileStrategy: ignore
+    cephObjectStoreUsers:
+      reconcileStrategy: ignore
+    cephObjectStores:
+      reconcileStrategy: ignore
+  # Storage device sets — one set uses /dev/vdb on each node
+  storageDeviceSets:
+    - name: ocs-deviceset-drbd
+      count: 1
+      replica: 2
+      portable: false
+      dataPVCTemplate:
+        spec:
+          storageClassName: local-storage
+          accessModes:
+            - ReadWriteOnce
+          volumeMode: Block
+          resources:
+            requests:
+              storage: 90Gi

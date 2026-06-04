@@ -1,0 +1,63 @@
+# cluster.yml — Two-Node OpenShift 4.22 with Fencing + ODF DRBD Storage
+# IBM Cloud KVM deployment via openshift-agent-install framework
+#
+# This is identical to examples/two-node-fencing/cluster.yml.
+# The ODF DRBD storage is added post-deployment via the operator manifests
+# in this directory. The key infrastructure difference is that the VMs are
+# created with an additional 100 GB data disk (/dev/vdb) for ODF OSDs.
+#
+# Deploy with:
+#   ODF_DISK_SIZE=100 sudo bash scripts/deploy-tnf-kvm.sh
+#
+# Network: VyOS VLAN 1924 → 192.168.49.0/24
+# API VIP : 192.168.49.253
+# App VIP : 192.168.49.252
+# Node 1  : 192.168.49.21
+# Node 2  : 192.168.49.22
+
+use_site_configs: false
+pull_secret_path: ~/pull-secret.json
+ssh_public_key_path: ~/.ssh/openshift-twonode-ed25519.pub
+
+cluster_name: twonode
+base_domain: sandbox3377.opentlc.com
+
+ocp_version: "4.22"
+
+platform_type: baremetal
+control_plane_replicas: 2
+app_node_replicas: 0
+
+feature_set: TechPreviewNoUpgrade
+
+network_type: OVNKubernetes
+
+api_vips:
+  - 192.168.49.253
+
+app_vips:
+  - 192.168.49.252
+
+machine_network_cidrs:
+  - 192.168.49.0/24
+
+cluster_network_cidr: 10.128.0.0/14
+cluster_network_host_prefix: 23
+
+service_network_cidrs:
+  - 172.30.0.0/16
+
+rendezvous_ip: 192.168.49.21
+
+dns_servers:
+  - 192.168.49.1
+
+dns_search_domains:
+  - twonode.sandbox3377.opentlc.com
+  - sandbox3377.opentlc.com
+
+ntp_servers:
+  - 0.rhel.pool.ntp.org
+  - 1.rhel.pool.ntp.org
+
+create_ztp_manifests: false

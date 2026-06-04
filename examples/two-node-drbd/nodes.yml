@@ -1,0 +1,102 @@
+# nodes.yml — Two-Node OpenShift 4.22 with Fencing (TNF)
+# IBM Cloud KVM deployment via openshift-agent-install framework
+#
+# Interface naming used by hack/deploy-on-kvm.sh (MULTI_NETWORK=true):
+#   enp1s0 — primary VLAN 1924 interface (MAC 52:54:00:aa:bb:0X)
+#   enp2s0 — secondary VLAN 1924 interface (same network, for HA bond awareness)
+#
+# Both interfaces connect to libvirt network "1924" (192.168.49.0/24 via VyOS).
+# Static IPs are configured via NMState networkConfig below.
+
+control_plane_replicas: 2
+app_node_replicas: 0
+
+# Shared subnet octet prefix (192.168.49)
+octet: 192.168.49
+
+node_one_mac: "52:54:00:aa:bb:01"
+node_two_mac: "52:54:00:aa:bb:02"
+# Second interface MACs (required by MULTI_NETWORK mode in deploy-on-kvm.sh)
+node_one_mac2: "52:54:00:aa:bb:11"
+node_two_mac2: "52:54:00:aa:bb:22"
+
+nodes:
+  - hostname: openshift-node1
+    role: master
+    # BMC — sushy-tools Redfish emulator (populated by deploy-on-kvm.sh)
+    # bmc:
+    #   address: redfish-virtualmedia+http://localhost:8000/redfish/v1/Systems/<UUID>
+    #   username: admin
+    #   password: admin
+    #   disableCertificateVerification: true
+    rootDeviceHints:
+      deviceName: /dev/vda
+    interfaces:
+      - name: enp1s0
+        mac_address: "52:54:00:aa:bb:01"
+      - name: enp2s0
+        mac_address: "52:54:00:aa:bb:11"
+    networkConfig:
+      interfaces:
+        - name: enp1s0
+          type: ethernet
+          state: up
+          mac-address: "52:54:00:aa:bb:01"
+          ipv4:
+            enabled: true
+            dhcp: false
+            address:
+              - ip: 192.168.49.21
+                prefix-length: 24
+        - name: enp2s0
+          type: ethernet
+          state: up
+          mac-address: "52:54:00:aa:bb:11"
+          ipv4:
+            enabled: false
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: 192.168.49.1
+            next-hop-interface: enp1s0
+            table-id: 254
+
+  - hostname: openshift-node2
+    role: master
+    # BMC — sushy-tools Redfish emulator (populated by deploy-on-kvm.sh)
+    # bmc:
+    #   address: redfish-virtualmedia+http://localhost:8000/redfish/v1/Systems/<UUID>
+    #   username: admin
+    #   password: admin
+    #   disableCertificateVerification: true
+    rootDeviceHints:
+      deviceName: /dev/vda
+    interfaces:
+      - name: enp1s0
+        mac_address: "52:54:00:aa:bb:02"
+      - name: enp2s0
+        mac_address: "52:54:00:aa:bb:22"
+    networkConfig:
+      interfaces:
+        - name: enp1s0
+          type: ethernet
+          state: up
+          mac-address: "52:54:00:aa:bb:02"
+          ipv4:
+            enabled: true
+            dhcp: false
+            address:
+              - ip: 192.168.49.22
+                prefix-length: 24
+        - name: enp2s0
+          type: ethernet
+          state: up
+          mac-address: "52:54:00:aa:bb:22"
+          ipv4:
+            enabled: false
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: 192.168.49.1
+            next-hop-interface: enp1s0
+            table-id: 254

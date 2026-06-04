@@ -48,7 +48,11 @@ ACTUAL_HOME=$(eval echo "~${ACTUAL_USER}")
 CLUSTER_NAME="${CLUSTER_NAME:-twonode}"
 GENERATED_ASSET_PATH="${GENERATED_ASSET_PATH:-${ACTUAL_HOME}/generated_assets}"
 FRAMEWORK_DIR="${FRAMEWORK_DIR:-${ACTUAL_HOME}/openshift-agent-install}"
-SITE_CONFIG_DIR="${FRAMEWORK_DIR}/examples/two-node-fencing"
+# Default site config from the openshift-agent-install framework.
+# Override SITE_CONFIG_DIR to use a different example, e.g.:
+#   SITE_CONFIG_DIR=~/openshift-twonode-guide/examples/two-node-drbd \
+#   ODF_DISK_SIZE=100 sudo bash scripts/deploy-tnf-kvm.sh
+SITE_CONFIG_DIR="${SITE_CONFIG_DIR:-${FRAMEWORK_DIR}/examples/two-node-fencing}"
 CLUSTER_YML="${SITE_CONFIG_DIR}/cluster.yml"
 NODES_YML="${SITE_CONFIG_DIR}/nodes.yml"
 
