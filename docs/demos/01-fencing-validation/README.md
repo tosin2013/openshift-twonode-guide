@@ -177,29 +177,57 @@ oc exec -n openshift-etcd etcd-openshift-node1 -c etcdctl -- \
 
 > **Note**: In this TNF deployment etcd runs as **stacked static pods** (managed by the Cluster Etcd Operator), not standalone Podman containers. Use `oc exec ... -c etcdctl` with env vars unset, not `podman exec etcd etcdctl`.
 
-## Step 4: Hard-Power-Off Node 2 via BMC
+## Step 4: Hard-Power-Off the Active Node via BMC
 
 This simulates an unplanned hardware failure — no graceful shutdown, no drain, no warning.
 
-```bash
-# Get the Node 2 libvirt UUID (sushy-emulator uses this as the Redfish System ID)
-NODE2_UUID=$(sudo virsh domuuid openshift-node2)
-echo "Node2 UUID: ${NODE2_UUID}"
+**Check your monitoring terminal first.** The output shows which node is currently serving the pod:
 
-# Hard power-off Node 2 via sushy-emulator Redfish
-# Note: use --systems-uri (not -b) and --ipport 8000 for this version of fence_redfish
-fence_redfish \
-  -a 192.168.122.10 \
-  --ssl-insecure \
-  -l admin \
-  -p admin \
-  --systems-uri "/redfish/v1/Systems/${NODE2_UUID}" \
-  --ipport 8000 \
-  -o off
-# Expected: "Success: Powered OFF"
-
-echo "Node 2 fenced. Watch the monitoring loop in your other terminal."
 ```
+11:05:01 — HTTP 200 — Pod node: openshift-node2   ← fence THIS node
+```
+
+Fence whichever node the monitor shows as active. This proves the surviving node takes over regardless of which one fails.
+
+=== "Fence Node 2 (pod running on openshift-node2)"
+
+    ```bash
+    TARGET_NODE=openshift-node2
+    TARGET_UUID=$(sudo virsh domuuid ${TARGET_NODE})
+    echo "Fencing ${TARGET_NODE} — UUID: ${TARGET_UUID}"
+
+    fence_redfish \
+      -a 192.168.122.10 \
+      --ssl-insecure \
+      -l admin \
+      -p admin \
+      --systems-uri "/redfish/v1/Systems/${TARGET_UUID}" \
+      --ipport 8000 \
+      -o off
+    # Expected: "Success: Powered OFF"
+
+    echo "${TARGET_NODE} fenced. Watch the monitoring loop in your other terminal."
+    ```
+
+=== "Fence Node 1 (pod running on openshift-node1)"
+
+    ```bash
+    TARGET_NODE=openshift-node1
+    TARGET_UUID=$(sudo virsh domuuid ${TARGET_NODE})
+    echo "Fencing ${TARGET_NODE} — UUID: ${TARGET_UUID}"
+
+    fence_redfish \
+      -a 192.168.122.10 \
+      --ssl-insecure \
+      -l admin \
+      -p admin \
+      --systems-uri "/redfish/v1/Systems/${TARGET_UUID}" \
+      --ipport 8000 \
+      -o off
+    # Expected: "Success: Powered OFF"
+
+    echo "${TARGET_NODE} fenced. Watch the monitoring loop in your other terminal."
+    ```
 
 > **fence_redfish flag note**: The `-b` flag shown in older guides is not supported in fence-agents-redfish on RHEL 9/10.
 > Use `--systems-uri` for the Redfish Systems path and `--ipport` for the non-standard port.
@@ -247,22 +275,25 @@ oc -n fencing-demo get pods -o wide
 > briefly loses its etcd connection (~15-20 seconds). `oc` commands will fail with connection errors
 > during this window — this is expected and resolves automatically.
 
-## Step 6: Power Node 2 Back On
+## Step 6: Power the Fenced Node Back On
 
 > **KVM note**: If the VM has `autostart: enabled` in libvirt (the default set by `hack/deploy-on-kvm.sh`),
-> node2 will power back on automatically within seconds of being fenced. You may not need to run this step.
-> Check first: `sudo virsh domstate openshift-node2`
+> the fenced node will power back on automatically within seconds. You may not need to run this step.
+> Check first: `sudo virsh domstate ${TARGET_NODE}`
 
-If node2 is still off:
+If the fenced node is still off:
 
 ```bash
-NODE2_UUID=$(sudo virsh domuuid openshift-node2)
+# TARGET_NODE should still be set from Step 4; if not, set it again:
+# export TARGET_NODE=openshift-node2   # or openshift-node1
+
+TARGET_UUID=$(sudo virsh domuuid ${TARGET_NODE})
 fence_redfish \
   -a 192.168.122.10 \
   --ssl-insecure \
   -l admin \
   -p admin \
-  --systems-uri "/redfish/v1/Systems/${NODE2_UUID}" \
+  --systems-uri "/redfish/v1/Systems/${TARGET_UUID}" \
   --ipport 8000 \
   -o on
 # Expected: "Success: Powered ON"
