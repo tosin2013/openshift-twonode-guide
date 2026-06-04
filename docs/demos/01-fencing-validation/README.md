@@ -19,19 +19,24 @@ This demo is the core proof-of-concept for the entire TNF architecture and direc
 > **KVM environment note**: Node IPs are `192.168.49.21` (node1) and `192.168.49.22` (node2).
 > The Redfish BMC for KVM is sushy-emulator at `192.168.122.10:8000` (HTTPS, self-signed cert).
 
+**Set these environment variables in every new shell session before running any command in this demo:**
+
 ```bash
 export KUBECONFIG=~/generated_assets/twonode/auth/kubeconfig
 export SSH_KEY=~/.ssh/openshift-twonode-ed25519
+```
 
-# Verify cluster readiness before starting
-oc get nodes
+Verify cluster readiness before starting:
+
+```bash
 # Both nodes must show Ready
+oc get nodes
 
-oc get clusteroperators | grep -v "True.*False.*False"
 # Must return nothing (all operators Available)
+oc get clusteroperators | grep -v "True.*False.*False"
 
-ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
 # Both nodes Online, all resources Started, no Failed Resource Actions
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
 ```
 
 ---
