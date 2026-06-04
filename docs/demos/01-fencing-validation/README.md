@@ -39,6 +39,14 @@ oc get clusteroperators | grep -v "True.*False.*False"
 ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
 ```
 
+> **If `pcs status` shows any `Failed Resource Actions`** (stale records from a previous run), clear them before proceeding:
+>
+> ```bash
+> ssh -i $SSH_KEY core@192.168.49.21 sudo pcs resource cleanup
+> ```
+>
+> Stale failed resource actions do not prevent the cluster from functioning but will obscure new failures during the test.
+
 ---
 
 ## Scenario
@@ -232,16 +240,39 @@ Fence whichever node the monitor shows as active. This proves the surviving node
 > **fence_redfish flag note**: The `-b` flag shown in older guides is not supported in fence-agents-redfish on RHEL 9/10.
 > Use `--systems-uri` for the Redfish Systems path and `--ipport` for the non-standard port.
 
+> **Pacemaker stonith-action note (KVM only)**: By default `stonith-action=reboot`, which causes Pacemaker to automatically power node2 back on after fencing — before etcd has completed its `force-new-cluster` transition. For demo/testing purposes, set `stonith-action=off` so the fenced node stays powered off until you manually run Step 6:
+>
+> ```bash
+> # Set before the demo (KVM only — do not change on bare metal production)
+> ssh -i $SSH_KEY core@192.168.49.21 sudo pcs property set stonith-action=off
+> ```
+
 ## Step 5: Observe the Failover Sequence
 
 Over the next 30-60 seconds, observe:
 
 ### In the monitoring terminal:
-- Pod node shows `openshift-node2` (baseline)
-- HTTP responses briefly show `000` (connection refused/timeout) — ~26 seconds in the validated run
-- Pod node changes to `none` while the pod is terminating/rescheduling
-- Pod node shows `openshift-node1` — workload has successfully moved
-- HTTP 200 responses resume — recovery complete
+
+Expect HTTP 000 for approximately **5 minutes**, then HTTP 200 returns. This is normal.
+
+**What's actually happening** (not what the monitor output suggests):
+
+- The node1 pod is alive and healthy the **entire time** — it never needs to reschedule
+- HTTP fails because the OVN-managed ingress VIP (`192.168.49.252`) was on node2 and takes ~5 minutes to migrate to node1
+- Once the VIP migrates, HTTP 200 resumes immediately — served by the node1 pod through node1's router
+- The monitor shows `Pod node: openshift-node2` during recovery because Kubernetes has a 5-minute pod eviction timeout — the pod API entry is stale, not the pod itself
+
+**Monitor output will look like:**
+```
+16:08:32 — HTTP 200 — Pod node: openshift-node2   ← baseline, VIP on node2
+16:08:47 — HTTP 000 — Pod: api-down               ← etcd quorum lost, API briefly down
+...
+16:09:57 — HTTP 000 — Pod: openshift-node2        ← API back, VIP still migrating
+...
+16:13:50 — HTTP 200 — Pod: openshift-node2        ← VIP migrated to node1, serving via node1 pod
+```
+
+> **Why "Pod node: node2" when node2 is off?** The Kubernetes API retains the pod entry for up to 5 minutes (eviction grace period) before marking it `Unknown`. The actual traffic is routing through node1's router to node1's pod. The stale monitor entry is misleading but expected.
 
 ### On Node 1:
 ```bash
@@ -334,6 +365,13 @@ ssh -i $SSH_KEY core@192.168.49.21 sudo pcs resource cleanup
 # Verify Pacemaker cluster is fully healthy
 ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
 # Expected: Both nodes Online, etcd-clone Started on both, no Failed Resource Actions
+
+# If etcd-clone shows Stopped on node1 (common post-failover pattern),
+# restart it via Pacemaker — the podman-etcd systemd service goes inactive
+# during recovery but the container keeps running; pcs restart reconciles the state:
+ssh -i $SSH_KEY core@192.168.49.21 "sudo pcs status | grep -q 'Stopped.*openshift-node1'" \
+  && ssh -i $SSH_KEY core@192.168.49.21 sudo pcs resource restart etcd-clone \
+  && echo "etcd-clone restarted" || echo "etcd-clone OK — no restart needed"
 
 # Verify POS application is still serving requests
 curl -s -o /dev/null -w "%{http_code}\n" \
