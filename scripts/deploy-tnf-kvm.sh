@@ -51,7 +51,7 @@ FRAMEWORK_DIR="${FRAMEWORK_DIR:-${ACTUAL_HOME}/openshift-agent-install}"
 # Default site config from the openshift-agent-install framework.
 # Override SITE_CONFIG_DIR to use a different example, e.g.:
 #   SITE_CONFIG_DIR=~/openshift-twonode-guide/examples/two-node-drbd \
-#   ODF_DISK_SIZE=100 sudo bash scripts/deploy-tnf-kvm.sh
+#   ODF_DISK_SIZE=500 DRBD_MON_DISK_SIZE=20 sudo bash scripts/deploy-tnf-kvm.sh
 SITE_CONFIG_DIR="${SITE_CONFIG_DIR:-${FRAMEWORK_DIR}/examples/two-node-fencing}"
 CLUSTER_YML="${SITE_CONFIG_DIR}/cluster.yml"
 NODES_YML="${SITE_CONFIG_DIR}/nodes.yml"
@@ -63,8 +63,12 @@ CP_CPU_CORES="${CP_CPU_CORES:-8}"
 CP_RAM_GB="${CP_RAM_GB:-32}"
 DISK_SIZE="${DISK_SIZE:-130}"
 # Set ODF_DISK_SIZE to a non-zero value (GB) to attach a second raw block
-# device (/dev/vdb) to each node for ODF DRBD storage.  0 = disabled.
+# device (/dev/vdb) to each node for ODF Ceph OSD storage.  0 = disabled.
 ODF_DISK_SIZE="${ODF_DISK_SIZE:-0}"
+# Set DRBD_MON_DISK_SIZE to a non-zero value (GB) to attach a third raw block
+# device (/dev/vdc) to each node for the ODF DRBD floating Ceph monitor.
+# Requires ODF_DISK_SIZE > 0.  Minimum 10 GB, recommended 20 GB.  0 = disabled.
+DRBD_MON_DISK_SIZE="${DRBD_MON_DISK_SIZE:-0}"
 LIBVIRT_VM_PATH="${LIBVIRT_VM_PATH:-/var/lib/libvirt/images}"
 
 LIBVIRT_NETWORK="network=1924,model=e1000e"
@@ -110,6 +114,7 @@ if [[ "${DO_DESTROY}" == true ]]; then
     virsh undefine "${node_name}" 2>/dev/null || true
     rm -f "${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}.qcow2"
     rm -f "${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
+    rm -f "${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-drbd-mon.qcow2"
     ok "VM ${node_name} removed"
   done
 
@@ -233,7 +238,8 @@ create_vms() {
     mac2=$(get_mac "${node_name}" "enp2s0")
 
     local odf_label=""
-    [[ "${ODF_DISK_SIZE}" -gt 0 ]] && odf_label=" + ${ODF_DISK_SIZE} GB ODF"
+    [[ "${ODF_DISK_SIZE}" -gt 0 ]]     && odf_label=" + ${ODF_DISK_SIZE} GB OSD"
+    [[ "${DRBD_MON_DISK_SIZE}" -gt 0 ]] && odf_label="${odf_label} + ${DRBD_MON_DISK_SIZE} GB DRBD-mon"
     info "Creating VM ${node_name} (${CP_CPU_CORES} vCPU / ${CP_RAM_GB} GB / ${DISK_SIZE} GB${odf_label})…"
     info "  MAC1=${mac1}  MAC2=${mac2}"
 
@@ -243,15 +249,26 @@ create_vms() {
       qemu-img create -f qcow2 "${disk_path}" "${DISK_SIZE}G"
     fi
 
-    # Optionally create an ODF data disk (/dev/vdb inside the VM)
+    # Optionally create an ODF OSD data disk (/dev/vdb inside the VM)
     local odf_disk_arg=""
     if [[ "${ODF_DISK_SIZE}" -gt 0 ]]; then
       local odf_disk_path="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
       if [[ ! -f "${odf_disk_path}" ]]; then
         qemu-img create -f qcow2 "${odf_disk_path}" "${ODF_DISK_SIZE}G"
-        ok "ODF disk created: ${odf_disk_path} (${ODF_DISK_SIZE} GB)"
+        ok "ODF OSD disk created: ${odf_disk_path} (${ODF_DISK_SIZE} GB)"
       fi
       odf_disk_arg="--disk path=${odf_disk_path},cache=none,format=qcow2"
+    fi
+
+    # Optionally create a DRBD floating-monitor disk (/dev/vdc inside the VM)
+    local drbd_mon_disk_arg=""
+    if [[ "${DRBD_MON_DISK_SIZE}" -gt 0 ]]; then
+      local drbd_mon_disk_path="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-drbd-mon.qcow2"
+      if [[ ! -f "${drbd_mon_disk_path}" ]]; then
+        qemu-img create -f qcow2 "${drbd_mon_disk_path}" "${DRBD_MON_DISK_SIZE}G"
+        ok "DRBD monitor disk created: ${drbd_mon_disk_path} (${DRBD_MON_DISK_SIZE} GB)"
+      fi
+      drbd_mon_disk_arg="--disk path=${drbd_mon_disk_path},cache=none,format=qcow2"
     fi
 
     # Define the VM (--import so virt-install does not require a boot medium,
@@ -262,6 +279,7 @@ create_vms() {
       --vcpus "sockets=1,cores=${CP_CPU_CORES},threads=1" \
       --disk "path=${disk_path},cache=none,format=qcow2" \
       ${odf_disk_arg:+${odf_disk_arg}} \
+      ${drbd_mon_disk_arg:+${drbd_mon_disk_arg}} \
       --network "${LIBVIRT_NETWORK},mac=${mac1}" \
       --network "${LIBVIRT_NETWORK},mac=${mac2}" \
       --connect=qemu:///system \
@@ -436,11 +454,18 @@ for idx in "${!NODE_NAMES_ARRAY[@]}"; do
   virsh destroy  "${node_name}" 2>/dev/null || true
   virsh undefine "${node_name}" 2>/dev/null || true
 
-  # Re-attach ODF disk if it was created in Phase 3
+  # Re-attach ODF OSD disk if it was created in Phase 3
   odf_disk_arg_p6=""
   if [[ "${ODF_DISK_SIZE}" -gt 0 ]]; then
     odf_disk_path_p6="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-odf.qcow2"
     [[ -f "${odf_disk_path_p6}" ]] && odf_disk_arg_p6="--disk path=${odf_disk_path_p6},cache=none,format=qcow2"
+  fi
+
+  # Re-attach DRBD floating-monitor disk if it was created in Phase 3
+  drbd_mon_disk_arg_p6=""
+  if [[ "${DRBD_MON_DISK_SIZE}" -gt 0 ]]; then
+    drbd_mon_disk_path_p6="${LIBVIRT_VM_PATH}/${CLUSTER_NAME}-${node_name}-drbd-mon.qcow2"
+    [[ -f "${drbd_mon_disk_path_p6}" ]] && drbd_mon_disk_arg_p6="--disk path=${drbd_mon_disk_path_p6},cache=none,format=qcow2"
   fi
 
   info "Creating ${node_name} with cdrom (boot order: cdrom→disk, UUID: ${node_uuid})…"
@@ -451,6 +476,7 @@ for idx in "${!NODE_NAMES_ARRAY[@]}"; do
     --vcpus "sockets=1,cores=${CP_CPU_CORES},threads=1" \
     --disk "path=${disk_path},cache=none,format=qcow2" \
     ${odf_disk_arg_p6:+${odf_disk_arg_p6}} \
+    ${drbd_mon_disk_arg_p6:+${drbd_mon_disk_arg_p6}} \
     --cdrom "${ISO_PATH}" \
     --network "${LIBVIRT_NETWORK},mac=${mac1}" \
     --network "${LIBVIRT_NETWORK},mac=${mac2}" \
