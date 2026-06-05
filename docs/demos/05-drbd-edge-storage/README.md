@@ -1,6 +1,6 @@
 # Demo 5: DRBD Edge Storage — Developer Preview
 
-**Objective**: Demonstrate highly available block storage for the two-node cluster using ODF with DRBD, without the overhead of full Ceph.
+**Objective**: Demonstrate highly available block storage for the two-node cluster using ODF 4.21 with DRBD, enabling stateful workloads to survive a node failure without requiring a third node for Ceph quorum.
 
 > ## ⚠ Developer Preview Warning
 >
@@ -12,212 +12,313 @@
 > - Are subject to change or removal without notice
 > - Do not qualify for Red Hat production support
 >
+> For assistance, contact: `ocs-devpreview@redhat.com`
+>
 > The following ODF features are **NOT available** in this configuration:
 > - **NooBaa** (object storage / S3-compatible API)
 > - **NFS server** export via ODF
 > - **RGW (RADOS Gateway / S3)**
-> - **Regional Disaster Recovery (Regional DR)**
-> - **Metro DR** (synchronous replication across sites)
-> - Multi-cluster storage federation
+> - **Regional Disaster Recovery / Metro-DR**
+> - Multi-cluster storage federation, PDBs, Mon failover, Multus
 >
 > This demo is provided for evaluation and proof-of-concept purposes only.
 > For production storage on two-node clusters, use the LVM Operator (see [Demo 2](../02-database-ha/README.md)).
 
 ---
 
-## What DRBD Provides
+## Architecture Overview
 
-DRBD (Distributed Replicated Block Device) is a kernel-level block device replication mechanism. In the context of TNF:
+### Why DRBD? The Two-Node Ceph Problem
+
+Standard Ceph requires a **minimum of 3 monitors** to maintain quorum. On a two-node cluster, if one node goes down, the remaining Ceph monitor cannot form a majority and the entire storage cluster stalls. This is the fundamental storage HA gap in the two-node OpenShift architecture.
+
+ODF 4.21 solves this with a **floating Ceph monitor** backed by DRBD:
 
 ```
-Node 1                              Node 2
-┌──────────────────────┐           ┌──────────────────────┐
-│  DRBD device: /drbd0 │◄─────────►│  DRBD device: /drbd0 │
-│  (UpToDate primary)  │  kernel   │  (UpToDate secondary) │
-│                      │  level    │                        │
-│  PVC → OSD pod       │  sync     │  PVC → OSD pod         │
-└──────────────────────┘           └──────────────────────┘
-           ▲
-           │  ODF provides PVC/PV abstraction
-           ▼
-     Application Pod
+Node 1                                     Node 2
+┌───────────────────────────────────────┐  ┌───────────────────────────────────────┐
+│                                       │  │                                       │
+│  /dev/vdb (100–500 GB)                │  │  /dev/vdb (100–500 GB)                │
+│  ┌─────────────────────────────┐      │  │  ┌─────────────────────────────┐      │
+│  │   Ceph OSD (local PV)       │      │  │  │   Ceph OSD (local PV)       │      │
+│  └─────────────────────────────┘      │  │  └─────────────────────────────┘      │
+│                                       │  │                                       │
+│  /dev/vdc (≥ 10 GB)  ◄───DRBD────►   │  │  /dev/vdc (≥ 10 GB)                  │
+│  ┌─────────────────────────────┐      │  │  ┌─────────────────────────────┐      │
+│  │  DRBD device /dev/drbd0     │      │  │  │  DRBD device /dev/drbd0     │      │
+│  │  Floating Ceph Monitor      │      │  │  │  (standby — synced in real   │      │
+│  │  (Active — mon data here)   │      │  │   time via DRBD protocol C)   │      │
+│  └─────────────────────────────┘      │  └─────────────────────────────────┘     │
+└───────────────────────────────────────┘  └───────────────────────────────────────┘
+                              ▲
+                              │ DRBD replicates mon data at kernel level
+                              │ (port 7794 between nodes)
+                              ▼
+                   When Node 1 is fenced:
+                   - DRBD promotes /dev/drbd0 on Node 2 to Primary
+                   - Floating Ceph mon is restarted on Node 2
+                   - Ceph quorum is maintained with 1 monitor
+                   - OSD on Node 2 is healthy → PVCs remain accessible
 ```
 
-Unlike local storage (LVM), a DRBD-backed PVC can be accessed from either node after a failover, enabling true storage HA without a third node for Ceph quorum.
+### Why the Disk Sizes Matter
+
+| Disk | Purpose | Minimum Size | Why |
+|---|---|---|---|
+| `/dev/vdb` (OSD disk) | Ceph OSD — raw block device for storing actual data | **500 GB** (production) | Ceph OSDs require significant capacity for metadata, BlueStore WAL/DB journals, and data. Below 500 GB, OSD performance degrades and the `osd_min_size` check may reject the disk. For dev/testing, 100 GB may work but is not recommended. |
+| `/dev/vdc` (floating monitor disk) | DRBD-replicated block device for the Ceph monitor | **10–50 GB** | Ceph monitor data (cluster maps, OSD maps, PG maps) is small — typically a few GB. 10 GB is sufficient. DRBD protocol C (synchronous) means writes commit only when both nodes acknowledge, requiring very low latency between nodes. |
+
+### Why DRBD Instead of a Third Node for the Monitor?
+
+A third node (arbiter) would solve the quorum problem but increases hardware cost. DRBD provides synchronous block-level replication of the monitor's disk, so:
+
+- The monitor disk **always exists on both nodes simultaneously**
+- If the active node is fenced, DRBD promotes the secondary's copy to primary in seconds
+- The Ceph monitor is restarted on the surviving node using its local DRBD copy
+- **No quorum loss** — the cluster sees the same monitor with the same data
+
+This is specifically designed for **edge deployments** where a third node is impractical.
+
+### KMM (Kernel Module Management)
+
+RHCOS (Red Hat CoreOS) is an immutable OS — you cannot install RPMs directly. The DRBD kernel module must be compiled and loaded via the **Kernel Module Management (KMM) operator**, which:
+
+1. Pulls the DRBD source
+2. Builds a kernel module in-cluster using the exact running kernel version
+3. Loads the module on both nodes via a DaemonSet
+4. Rebuilds the module after kernel updates automatically
 
 ---
 
-## Prerequisites
+## Infrastructure Requirements
 
-- A healthy two-node TNF cluster with OCP 4.22
-- ODF 4.21+ operator available in OperatorHub
-- Two additional data disks on each node (separate from the OS disk and etcd disk)
-- Root/sudo access to the nodes for DRBD kernel module installation
-- `oc` CLI and SSH access to both nodes
+> **Note**: This demo requires dedicated hardware that differs from the standard two-node deployment.
+> A GitHub issue tracks the work to validate this demo on properly-sized hardware:
+> **[GitHub Issue #6 — Demo 5: Validate ODF 4.21 DRBD Edge Storage on properly-sized hardware](https://github.com/tosin2013/openshift-twonode-guide/issues/6)**
+
+### Per-Node Disk Layout
+
+```
+/dev/vda   ← OS disk (130 GB minimum, standard)
+/dev/vdb   ← Ceph OSD disk (500 GB minimum for production, 100 GB for dev)
+/dev/vdc   ← DRBD floating monitor disk (10–50 GB, ≥ 10 GB required)
+```
+
+### Network Requirements
+
+- Port **7794** must be open and reachable between nodes (DRBD replication)
+- DRBD protocol C (synchronous) requires low latency (< 1 ms RTT recommended)
+
+### How to Deploy the Cluster with ODF Disks
+
+Use the `deploy-tnf-kvm.sh` script with both `ODF_DISK_SIZE` and an additional `DRBD_MON_DISK_SIZE` variable (see `examples/two-node-drbd/`):
 
 ```bash
-# Verify available disks on each node (should see /dev/sdb or /dev/sdc free)
-ssh core@192.168.150.21 lsblk
-ssh core@192.168.150.22 lsblk
+# Standard two-node with ODF OSD disk (100 GB for dev, 500 GB for production)
+# and floating monitor disk (20 GB)
+export KUBECONFIG=/dev/null  # cleared before deploy
 
-# Verify nodes are clean (no existing ODF/Ceph)
-oc get pods -n openshift-storage 2>/dev/null || echo "No storage namespace — OK"
+nohup sudo env \
+  ODF_DISK_SIZE=500 \
+  SITE_CONFIG_DIR=/home/vpcuser/openshift-twonode-guide/examples/two-node-drbd \
+  bash scripts/deploy-tnf-kvm.sh \
+  --cluster-name twonode \
+  --base-domain example.com \
+  > /tmp/deploy.log 2>&1 &
 ```
 
----
-
-## Step 1: Install the DRBD Kernel Module
-
-DRBD requires a kernel module. On RHEL CoreOS (the OpenShift node OS), modules must be loaded via a MachineConfig or installed from a compatible RPM.
+After deployment, verify ODF disks are present:
 
 ```bash
-# Check if DRBD module is available
-ssh core@192.168.150.21 modinfo drbd 2>/dev/null || echo "DRBD module not available — need to install"
-
-# Install DRBD via MachineConfig (requires kmod-drbd from ELRepo or RHEL supplementary)
-# Follow the Red Hat documentation for loading third-party kernel modules on RHCOS:
-# https://docs.openshift.com/container-platform/4.22/nodes/nodes/nodes-nodes-managing.html
-
-oc apply -f - <<'EOF'
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
-metadata:
-  labels:
-    machineconfiguration.openshift.io/role: master
-  name: 99-master-drbd-module
-spec:
-  config:
-    ignition:
-      version: 3.2.0
-    systemd:
-      units:
-        - name: drbd-module-load.service
-          enabled: true
-          contents: |
-            [Unit]
-            Description=Load DRBD kernel module
-            Before=kubelet.service
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=/usr/sbin/modprobe drbd
-
-            [Install]
-            WantedBy=multi-user.target
-EOF
-
-# Wait for nodes to apply the MachineConfig (they will reboot)
-oc get mcp master -w
-# Wait until UPDATED=True and DEGRADED=False
-
-# Verify module is loaded
-ssh core@192.168.150.21 lsmod | grep drbd
+export SSH_KEY=~/.ssh/openshift-twonode-ed25519
+ssh -i $SSH_KEY core@192.168.49.21 lsblk
+# Expected:
+# NAME   MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+# vda    252:0    0  130G  0 disk
+# ├─vda1 252:1    0    1M  0 part
+# ...
+# vdb    252:16   0  500G  0 disk   ← OSD disk
+# vdc    252:32   0   20G  0 disk   ← Floating monitor disk (add manually or via script)
 ```
 
-## Step 2: Install the ODF Operator
+---
+
+## Installation Procedure
+
+> **Important**: This procedure requires Red Hat Customer Portal access to download the installation scripts
+> referenced in the [ODF 4.21 Two-Node Fencing Developer Preview article](https://access.redhat.com/articles/7139231).
+> The scripts are: `configure-drbd.sh`, `mon-deployment.sh`, `lso-storageclass.yml`, `pv.yml`, and `update-csi-resources.sh`.
+
+### Step 1: Install the ODF Operator
 
 ```bash
-# Install ODF operator via OperatorHub
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-storage
-  labels:
-    openshift.io/cluster-monitoring: "true"
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: openshift-storage-operatorgroup
-  namespace: openshift-storage
-spec:
-  targetNamespaces:
-    - openshift-storage
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: odf-operator
-  namespace: openshift-storage
-spec:
-  channel: stable-4.14
-  name: odf-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+export KUBECONFIG=~/generated_assets/twonode/auth/kubeconfig
 
-# Wait for ODF operator to be ready
-oc -n openshift-storage wait --for=condition=ready pod -l app=rook-ceph-operator \
-  --timeout=300s
+oc apply -f examples/two-node-drbd/odf-subscription.yaml
+# channel: stable-4.21
+
+# Wait for all CSVs to reach Succeeded (10-15 minutes)
+for i in $(seq 1 30); do
+  PENDING=$(oc get csv -n openshift-storage --no-headers 2>/dev/null | grep -v "Succeeded" | grep -v "^$")
+  echo "$(date +%H:%M:%S) — Pending CSVs: ${PENDING:-none}"
+  [[ -z "$PENDING" ]] && echo "✅ All CSVs Succeeded!" && break
+  sleep 30
+done
 ```
 
-## Step 3: Label the Storage Nodes
+Expected CSVs that must reach `Succeeded`:
+- `odf-operator.v4.21.x`
+- `ocs-operator.v4.21.x`
+- `rook-ceph-operator.v4.21.x`
+- `odf-prometheus-operator.v4.21.x`
+- `mcg-operator.v4.21.x`
+- `odf-csi-addons-operator.v4.21.x`
+- `odf-dependencies.v4.21.x`
+- `ocs-client-operator.v4.21.x`
+
+### Step 2: Label Storage Nodes
 
 ```bash
 # Label both nodes as ODF storage nodes
-oc label node node1 cluster.ocs.openshift.io/openshift-storage=''
-oc label node node2 cluster.ocs.openshift.io/openshift-storage=''
+oc label node openshift-node1 cluster.ocs.openshift.io/openshift-storage=''
+oc label node openshift-node2 cluster.ocs.openshift.io/openshift-storage=''
 
-# Verify labels
+# Verify
 oc get nodes --show-labels | grep openshift-storage
 ```
 
-## Step 4: Create the StorageCluster with DRBD
+### Step 3: Configure DRBD (Floating Monitor Disk)
 
-Follow the [Red Hat ODF on Two-Node OpenShift with Fencing Developer Preview guide](https://access.redhat.com/documentation/en-us/red_hat_openshift_data_foundation) to create the StorageCluster CR with DRBD replication. The exact CR format is documented in the Red Hat Developer Preview guide and is subject to change between ODF releases.
-
-The general structure is:
-
-```yaml
-apiVersion: ocs.openshift.io/v1
-kind: StorageCluster
-metadata:
-  name: ocs-storagecluster
-  namespace: openshift-storage
-spec:
-  # Two-node with DRBD configuration
-  # Exact parameters — refer to the official Red Hat Developer Preview guide
-  storageDeviceSets:
-    - name: ocs-deviceset
-      count: 1
-      replica: 2                   # 2 replicas = both nodes
-      dataPVCTemplate:
-        spec:
-          storageClassName: local-storage  # pre-provisioned local PV
-          accessModes: [ReadWriteOnce]
-          resources:
-            requests:
-              storage: 100Gi
-  # ... additional DRBD-specific parameters as per Red Hat documentation
-```
-
-> **Important**: Always follow the current Red Hat ODF Developer Preview documentation for the exact `StorageCluster` specification. The DRBD integration parameters are evolving and the above is a structural reference only.
-
-## Step 5: Verify DRBD Replication is Active
+This step uses the `configure-drbd.sh` script from the [Red Hat Customer Portal article](https://access.redhat.com/articles/7139231).
+Download and run it from a host with `oc` access:
 
 ```bash
-# SSH to Node 1 and check DRBD status
-ssh core@192.168.150.21
-
-# DRBD status (run after StorageCluster is created and OSD pods are running)
-sudo drbdadm status
-
-# Expected output (healthy):
-# drbd0 role:Primary
-#   disk:UpToDate
-#   node2 role:Secondary
-#     peer-disk:UpToDate
-#
-# Both "UpToDate" is critical — if node2 shows "Inconsistent" or "DUnknown",
-# replication is not healthy.
-
-# Alternative: check via drbdsetup
-sudo drbdsetup status --verbose
+# The script installs KMM operator and configures DRBD on the floating monitor disk
+# Replace /dev/vdc with your actual floating monitor disk device
+bash configure-drbd.sh --floating-mon-disk /dev/vdc
 ```
 
-## Step 6: Create a PVC and Write Test Data
+What the script does internally:
+1. Installs the KMM (Kernel Module Management) operator
+2. Creates a `Module` CR to build the `drbd` kernel module for the running RHCOS kernel
+3. Waits for KMM to compile and load the module on both nodes (~10 minutes)
+4. Configures `/etc/drbd.conf` and `/etc/drbd.d/r0.res` via a MachineConfig
+5. Initializes the DRBD resource on the floating monitor disk (port 7794)
+
+Verify DRBD is configured:
+
+```bash
+NODE=openshift-node1
+oc debug node/${NODE} -- chroot /host \
+  sudo podman run --rm --privileged \
+  -v /dev:/dev -v /etc/drbd.conf:/etc/drbd.conf -v /etc/drbd.d:/etc/drbd.d \
+  --net host --hostname "${NODE}" \
+  quay.io/rhceph-dev/odf4-drbd-rhel9:v4.21.0-1 \
+  drbdadm status
+# Expected:
+# r0 role:Secondary
+#   disk:UpToDate
+# openshift-node2 role:Secondary
+#   peer-disk:UpToDate
+```
+
+### Step 4: Create PVs for OSD Disks
+
+Create the Local Storage StorageClass and PVs using the scripts from the Customer Portal article:
+
+```bash
+# Create local storage StorageClass (lso-storageclass.yml from Customer Portal)
+oc create -f lso-storageclass.yml
+
+# Edit pv.yaml to match your disk path and size, then apply for both nodes
+# Example: /dev/vdb, 500Gi, nodeAffinity to openshift-node1 and openshift-node2
+oc create -f pv.yml
+```
+
+Alternatively, create the PVs manually using disk-by-id:
+
+```bash
+# Get disk IDs on each node
+ssh -i ~/.ssh/openshift-twonode-ed25519 core@192.168.49.21 \
+  ls -la /dev/disk/by-id/ | grep -v part
+```
+
+```yaml
+# pv-node1.yaml — repeat for node2
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv-odf-node1
+spec:
+  capacity:
+    storage: 500Gi
+  volumeMode: Block
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage-odf
+  local:
+    path: /dev/disk/by-id/<DISK_ID_OF_VDB_ON_NODE1>
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - openshift-node1
+```
+
+### Step 5: Deploy the Floating Monitor
+
+Run the `mon-deployment.sh` script from the Customer Portal article:
+
+```bash
+# Edit mon-deployment.sh to use the downstream Ceph image, then run:
+bash mon-deployment.sh
+
+# Verify the floating monitor deployment
+oc get deployment -n openshift-storage | grep rook-ceph-mon-c
+oc get svc -n openshift-storage | grep mon
+```
+
+### Step 6: Create the StorageCluster
+
+Apply the `storagecluster.yaml` from the Customer Portal article:
+
+```bash
+# The StorageCluster CR is provided in the Customer Portal article
+# as storagecluster.yaml — apply it:
+oc create -f storagecluster.yaml
+
+# Wait for Ready status (15-30 minutes)
+oc get storagecluster -n openshift-storage -w
+```
+
+Also available in `examples/two-node-drbd/storagecluster-drbd.yaml` as a reference.
+The StorageCluster CR references the local-storage-odf StorageClass and sets `replica: 2`.
+
+### Step 7: Post-Installation Tuning
+
+```bash
+# Optimize resource consumption for the two-node environment
+bash update-csi-resources.sh
+```
+
+### Step 8: Verify the StorageClasses
+
+```bash
+oc get storageclass
+# Expected:
+# ocs-storagecluster-ceph-rbd   (block, RWO — primary for most workloads)
+# ocs-storagecluster-cephfs     (file, RWX — if available in this config)
+```
+
+---
+
+## Demo Validation (After Successful Installation)
+
+### Write Test Data
 
 ```bash
 # Create a PVC backed by ODF/DRBD StorageClass
@@ -226,129 +327,170 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: drbd-test-pvc
-  namespace: openshift-storage
+  namespace: default
 spec:
-  storageClassName: ocs-storagecluster-ceph-rbd  # adjust to actual StorageClass name
+  storageClassName: ocs-storagecluster-ceph-rbd
   accessModes: [ReadWriteOnce]
   resources:
     requests:
       storage: 5Gi
 EOF
 
-# Wait for PVC to bind
-oc -n openshift-storage get pvc drbd-test-pvc -w
+oc get pvc drbd-test-pvc -n default -w
 # Wait until STATUS=Bound
 
-# Write test data via a temporary pod
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: drbd-writer
-  namespace: openshift-storage
-spec:
-  restartPolicy: Never
-  containers:
-    - name: writer
-      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-      command:
-        - sh
-        - -c
-        - |
-          echo "DRBD test data - $(date)" > /mnt/test/testfile.txt
-          echo "Checksum: $(sha256sum /mnt/test/testfile.txt)"
-          cat /mnt/test/testfile.txt
-          echo "Write complete."
-      volumeMounts:
-        - name: data
-          mountPath: /mnt/test
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: drbd-test-pvc
-EOF
+# Write test data
+oc run drbd-writer --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+  --restart=Never --overrides='
+{
+  "spec": {
+    "containers": [{
+      "name": "drbd-writer",
+      "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
+      "command": ["sh", "-c",
+        "echo \"DRBD test - $(date)\" > /mnt/test.txt && sha256sum /mnt/test.txt && cat /mnt/test.txt"],
+      "volumeMounts": [{"name":"data","mountPath":"/mnt"}]
+    }],
+    "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"drbd-test-pvc"}}]
+  }
+}'
 
-oc -n openshift-storage wait --for=condition=complete pod/drbd-writer --timeout=60s
-oc -n openshift-storage logs drbd-writer
+oc logs drbd-writer -n default
+# Record the SHA256 checksum for later verification
 ```
 
-## Step 7: Fence a Node and Verify Data Accessibility
+### Fence Node 1 and Verify Failover
 
 ```bash
-# Note which node the PVC is currently accessible from
-PVC_NODE=$(oc -n openshift-storage get pvc drbd-test-pvc \
-  -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}')
-echo "PVC is on: ${PVC_NODE}"
+export SSH_KEY=~/.ssh/openshift-twonode-ed25519
 
-# Fence that node
-VM_UUID=$(virsh domuuid ${PVC_NODE})
-fence_redfish -a localhost --ssl-insecure -l admin -p changeme \
-  -b "/redfish/v1/Systems/${VM_UUID}" -o off
+# Check which node the PVC is bound to
+PVC_NODE=$(oc get pods -n default -o wide | grep drbd-writer | awk '{print $7}')
+echo "PVC was on: ${PVC_NODE}"
 
-# Wait for node to be fenced and other node to take over storage
-sleep 30
-ssh core@192.168.150.21 sudo drbdadm status
-# Node 2 should now show: role:Primary, disk:UpToDate
+# Apply ODF-recommended taints before fencing (allows RWO failover)
+oc adm taint nodes openshift-node1 \
+  node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+oc adm taint nodes openshift-node1 \
+  node.kubernetes.io/out-of-service=nodeshutdown:NoSchedule
 
-# Read the test data from the surviving node
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: drbd-reader
-  namespace: openshift-storage
-spec:
-  restartPolicy: Never
-  containers:
-    - name: reader
-      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-      command:
-        - sh
-        - -c
-        - |
-          echo "Reading test data:"
-          cat /mnt/test/testfile.txt
-          echo "Checksum verification: $(sha256sum /mnt/test/testfile.txt)"
-      volumeMounts:
-        - name: data
-          mountPath: /mnt/test
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: drbd-test-pvc
-EOF
+# Fence Node 1 via Pacemaker
+ssh -i $SSH_KEY core@192.168.49.21 \
+  sudo pcs node fence openshift-node1
 
-oc -n openshift-storage wait --for=condition=complete pod/drbd-reader --timeout=60s
-oc -n openshift-storage logs drbd-reader
-# Verify the checksum matches the one from the writer pod
-```
-
-## Step 8: Restore and Verify Re-sync
-
-```bash
-# Power on the fenced node
-fence_redfish -a localhost --ssl-insecure -l admin -p changeme \
-  -b "/redfish/v1/Systems/${VM_UUID}" -o on
-
-# Wait for the node to rejoin and DRBD to re-sync
+# Watch node status
 oc get nodes -w
 
-# Verify DRBD is back to UpToDate on both nodes
-ssh core@192.168.150.21 sudo drbdadm status
-# Both nodes should show disk:UpToDate
+# Verify DRBD promoted on survivor
+ssh -i $SSH_KEY core@192.168.49.22 \
+  sudo drbdadm status
+# Expected: Node 2 shows role:Primary, disk:UpToDate
+
+# Read back the data on the survivor
+oc run drbd-reader --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+  --restart=Never --overrides='
+{
+  "spec": {
+    "containers": [{
+      "name": "drbd-reader",
+      "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
+      "command": ["sh", "-c",
+        "cat /mnt/test.txt && sha256sum /mnt/test.txt"],
+      "volumeMounts": [{"name":"data","mountPath":"/mnt"}]
+    }],
+    "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"drbd-test-pvc"}}]
+  }
+}'
+
+oc logs drbd-reader -n default
+# Checksum must match the writer output
+```
+
+### Restore Node 1 and Verify Re-sync
+
+```bash
+# Power on Node 1 via Pacemaker / BMC
+ssh -i $SSH_KEY core@192.168.49.22 \
+  sudo pcs node unstandby openshift-node1
+
+# Wait for DRBD re-sync
+oc get nodes -w
+# Wait until openshift-node1 shows Ready
+
+# Remove the out-of-service taints
+oc adm taint nodes openshift-node1 \
+  node.kubernetes.io/out-of-service=nodeshutdown:NoExecute-
+oc adm taint nodes openshift-node1 \
+  node.kubernetes.io/out-of-service=nodeshutdown:NoSchedule-
+
+# Verify DRBD re-sync is complete
+ssh -i $SSH_KEY core@192.168.49.21 \
+  sudo drbdadm status
+# Both nodes: disk:UpToDate
 ```
 
 ---
 
-## Expected Validation Output
+## Expected Results
 
 | Check | Expected Result |
 |---|---|
-| `drbdadm status` (healthy) | Both nodes show `disk:UpToDate` |
-| PVC after node failure | Accessible from the surviving node |
+| ODF operator CSVs | All 8 CSVs in `Succeeded` state |
+| StorageCluster status | `Ready` |
+| DRBD status (healthy) | Both nodes: `disk:UpToDate` |
+| PVC after node failure | Accessible from surviving node via DRBD promotion |
 | Test file content after failover | Identical to pre-failover write |
 | Checksum verification | Matches — data integrity confirmed |
 | DRBD re-sync after node recovery | Both nodes return to `UpToDate` |
+
+---
+
+## Troubleshooting
+
+### DRBD build in error state (KMM build fails)
+
+```bash
+oc get pods -n openshift-kmm
+# If drbd-kmod-build pod shows Error:
+
+oc delete module drbd-kmod -n openshift-kmm
+oc delete pods -n openshift-kmm -l app=drbd-kmod-build
+
+# Re-run configure-drbd.sh to trigger a fresh module build
+```
+
+### Floating monitor enters drbd-init failover state
+
+```bash
+# Manually set both nodes to DRBD Secondary to reset role state
+for NODE in openshift-node1 openshift-node2; do
+  oc debug node/${NODE} -- chroot /host \
+    sudo podman run --rm --privileged \
+    -v /dev:/dev -v /etc/drbd.conf:/etc/drbd.conf -v /etc/drbd.d:/etc/drbd.d \
+    --hostname "${NODE}" \
+    quay.io/rhceph-dev/odf4-drbd-rhel9:v4.21.0-1 \
+    drbdadm secondary r0
+done
+```
+
+### Registry pod restarts cause DRBD DaemonSet restart
+
+```bash
+# Patch NodeModulesConfig CR for each node to force KMM module rebuild
+oc get nodemodulesconfig.kmm.sigs.x-k8s.io
+
+for NODE in openshift-node1 openshift-node2; do
+  oc patch nodemodulesconfig ${NODE} --type=json --subresource=status \
+    -p='[{"op": "remove", "path": "/status/modules/0"}]'
+done
+```
+
+### OSD pod down after node recovery
+
+```bash
+# Restart OSD pods
+oc delete pods -n openshift-storage -l app=rook-ceph-osd
+```
 
 ---
 
@@ -356,27 +498,33 @@ ssh core@192.168.150.21 sudo drbdadm status
 
 | Feature | Available? |
 |---|---|
-| ReadWriteOnce block PVCs | Yes |
-| ReadWriteMany (shared) PVCs | No |
+| ReadWriteOnce (RWO) block PVCs | Yes |
+| ReadWriteMany (RWX) shared PVCs | Limited (CephFS only) |
 | NooBaa object storage | No |
 | NFS file storage | No |
 | RADOS Gateway (S3) | No |
 | Regional Disaster Recovery | No |
 | Metro DR | No |
 | Standard Red Hat production support | No |
-
----
-
-## Cleanup
-
-```bash
-oc delete pod drbd-writer drbd-reader -n openshift-storage --ignore-not-found
-oc delete pvc drbd-test-pvc -n openshift-storage
-# To fully remove ODF: follow the ODF uninstallation guide
-```
+| Automatic capacity scaling | No |
+| Host networking | No |
 
 ---
 
 ## Why This Matters
 
-This demo directly addresses the storage gap in the two-node architecture. LVM/TopoLVM (Demo 2) provides local storage that is fast and simple, but a PVC is pinned to a single node. DRBD demonstrates a path toward **resilient storage without requiring three nodes for Ceph quorum** — the critical missing piece for full stateful workload HA on TNF. When this feature reaches GA, it will significantly expand the production use cases for two-node OpenShift at the edge.
+This demo addresses the **fundamental storage HA gap** in two-node OpenShift:
+
+- **Demo 2 (LVM/TopoLVM)**: Fast, simple local storage — but a PVC is permanently bound to one node. If that node is fenced, the PVC is unavailable until the node recovers.
+- **Demo 5 (ODF + DRBD)**: The floating Ceph monitor via DRBD enables the storage cluster to survive a node failure. The OSD on the surviving node remains healthy, PVCs can be re-attached after applying the `out-of-service` taint, and data is intact.
+
+When this feature reaches GA, it will significantly expand the production use cases for two-node OpenShift at the edge — enabling **stateful, HA workloads on just two nodes** without a third node, third rack, or external storage array.
+
+---
+
+## References
+
+- [ODF 4.21 Two-Node Fencing Developer Preview — Red Hat Customer Portal](https://access.redhat.com/articles/7139231) *(Red Hat account required for install scripts)*
+- [ODF 4.21 Release Notes — Two Nodes Fencing (TNF) Support](https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.21/html/4.21_release_notes/developer_previews)
+- [KMM (Kernel Module Management) Operator](https://docs.openshift.com/container-platform/latest/hardware_enablement/kmm-kernel-module-management.html)
+- [DRBD User Guide](https://linbit.com/drbd-user-guide/)
