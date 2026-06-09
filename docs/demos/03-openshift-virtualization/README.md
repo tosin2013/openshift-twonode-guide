@@ -591,4 +591,7 @@ oc delete pv vm-disk-local-pv vm-scratch-local-pv
 
 Many retail and manufacturing edge sites run legacy applications in VMs. This demo proves that the two-node cluster can unify VM and container workloads on minimal hardware — a key differentiator over traditional hypervisors that cannot co-locate VMs and cloud-native containers on the same platform.
 
-For environments requiring live migration (zero-downtime VM HA), the same platform supports DRBD or Ceph-backed shared storage as a future enhancement.
+For environments requiring live migration (zero-downtime VM HA), see
+**[Demo 6: VM Live Migration](../06-vm-live-migration/README.md)** — it uses ODF
+CephFS (`ReadWriteMany`) storage to enable live migration on the same two-node
+cluster, with zero VM downtime during node-to-node handoff.

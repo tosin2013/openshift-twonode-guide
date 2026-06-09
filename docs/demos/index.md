@@ -10,10 +10,11 @@ This section contains hands-on demonstrations that validate the HA capabilities 
 | Demo | Scenario | Status |
 |---|---|---|
 | [01 Fencing Validation](01-fencing-validation/README.md) | Hard node failure + Pacemaker STONITH | Validated — June 3, 2026 |
-| [02 Database HA](02-database-ha/README.md) | PostgreSQL StatefulSet through planned/unplanned failure | Stub — not yet validated |
-| [03 OpenShift Virtualization](03-openshift-virtualization/README.md) | Legacy VM HA alongside containers | Stub — not yet validated |
-| [04 Edge AI Inference](04-edge-ai-inference/README.md) | YOLOv8-style object detection at the edge | Stub — not yet validated |
+| [02 Database HA](02-database-ha/README.md) | PostgreSQL StatefulSet through planned/unplanned failure | Validated — June 2026 |
+| [03 OpenShift Virtualization](03-openshift-virtualization/README.md) | Legacy VM HA alongside containers | Validated — June 4, 2026 |
+| [04 Edge AI Inference](04-edge-ai-inference/README.md) | YOLOv8-style object detection at the edge | Validated — June 2026 |
 | [05 DRBD Edge Storage](05-drbd-edge-storage/README.md) | Replicated block storage via ODF + DRBD | Stub — Developer Preview |
+| [06 VM Live Migration](06-vm-live-migration/README.md) | Zero-downtime VM migration via ODF CephFS | Stub — Experimental (requires Demo 5) |
 
 ## Prerequisites for All Demos
 

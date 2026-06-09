@@ -16,6 +16,7 @@ A bare-metal-first guide for deploying a **Two-Node OpenShift 4.22** cluster usi
 | [Demo 3: OpenShift Virtualization](docs/demos/03-openshift-virtualization/) | Legacy VM HA on a two-node cluster |
 | [Demo 4: Edge AI Inference](docs/demos/04-edge-ai-inference/) | Lightweight object detection inference at the edge |
 | [Demo 5: DRBD Edge Storage](docs/demos/05-drbd-edge-storage/) | Replicated block storage via ODF + DRBD (Developer Preview) |
+| [Demo 6: VM Live Migration](docs/demos/06-vm-live-migration/) | Zero-downtime VM migration between nodes using ODF CephFS (Experimental) |
 
 ## Validated Deployment
 
@@ -107,7 +108,8 @@ demos/
 ├── 02-database-ha/          ← Stateful PostgreSQL workload through planned and unplanned failure
 ├── 03-openshift-virtualization/  ← Legacy VM HA alongside containers
 ├── 04-edge-ai-inference/    ← Object detection inference at the edge
-└── 05-drbd-edge-storage/    ← Replicated block storage (Developer Preview)
+├── 05-drbd-edge-storage/    ← Replicated block storage (Developer Preview)
+└── 06-vm-live-migration/    ← Zero-downtime VM migration via ODF CephFS (Experimental, requires Demo 5)
 ```
 
 Each demo directory contains a `README.md` with objectives, prerequisites, step-by-step instructions, and expected validation output.

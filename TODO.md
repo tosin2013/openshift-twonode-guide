@@ -43,6 +43,14 @@ Release plan: [RELEASE-PLAN.md](RELEASE-PLAN.md) | Version target: v0.2.0 | Due:
   a real cluster since writing.
   _Requires: live TNF cluster, intentionally triggered etcd panic_
 
+### FEATURE
+
+- [ ] **N-1** Validate Demo 6 end-to-end on a live cluster with ODF in `HEALTH_OK`
+  state. Run `virtctl migrate`, confirm `VirtualMachineInstanceMigration` reaches
+  `Succeeded`, verify UID unchanged and heartbeat log has no gaps. Update
+  `docs/demos/06-vm-live-migration/README.md` with actual timings and output.
+  _Requires: live TNF + ODF cluster (Demo 5 deployed)_
+
 ### FIX
 
 - [ ] **F-1** Complete Demo 5 HA fence validation using

@@ -6,6 +6,10 @@ All notable changes to this guide are documented here. Follows [Keep a Changelog
 
 ## [Unreleased]
 
+### Added
+
+- **Demo 6: VM Live Migration** — new demo showing zero-downtime VM migration between nodes using ODF CephFS (`ReadWriteMany`) storage. Covers `virtctl migrate` (manual) and `oc adm drain` (maintenance-driven) triggers, heartbeat continuity validation, and KVM-specific tuning for migration bandwidth. Clearly scoped as experimental on 2-node TNF; documents Red Hat's 3-worker-node recommendation and why this topology is still functional.
+
 ---
 
 ## [0.2.0] — 2026-06-09
