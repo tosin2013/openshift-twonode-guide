@@ -370,9 +370,12 @@ oc logs drbd-writer -n default
 ```bash
 export SSH_KEY=~/.ssh/openshift-twonode-ed25519
 
-# --- Pre-flight: confirm etcd and cluster are healthy ---
-ssh -i $SSH_KEY core@192.168.49.22 sudo pcs status | grep -A5 "etcd-clone"
-# Expected: Started: [openshift-node1 openshift-node2], no Failed Resource Actions
+# --- Pre-flight: run the 7-signal health check before any fencing operation ---
+# All checks (quorum, etcd, API, operators, STONITH, ODF) must pass before proceeding.
+# A failing pre-flight here means the subsequent fence will likely cause an unrecoverable
+# API outage rather than a clean failover.
+bash scripts/tnf-preflight-validate.sh
+# Expected: "Pre-flight complete: N/N checks passed. Safe to proceed."
 
 # Check which node the PVC is bound to
 PVC_NODE=$(oc get pods -n default -o wide | grep drbd-writer | awk '{print $7}')

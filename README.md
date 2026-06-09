@@ -8,7 +8,8 @@ A bare-metal-first guide for deploying a **Two-Node OpenShift 4.22** cluster usi
 |---|---|
 | [Architecture Guide](docs/architecture.md) | TNF vs TNA topology decisions, Pacemaker/STONITH, etcd-outside-cluster model |
 | [Deployment Guide](docs/deployment-guide.md) | Step-by-step ABI deployment for bare metal and KVM environments |
-| [Troubleshooting Guide](docs/troubleshooting.md) | Common failure modes and remediation |
+| [Troubleshooting Guide](docs/troubleshooting.md) | Common failure modes and remediation, including ODF + Demo 5 issues |
+| [IBM Cloud Hardware Spec](docs/hardware-spec-ibm-cloud.md) | Recommended IBM Cloud bare-metal profiles for all 5 demos |
 | [Configuration Templates](examples/two-node-fencing/) | Ready-to-use `cluster.yml` and `nodes.yml` for `openshift-agent-install` |
 | [Demo 1: Fencing Validation](docs/demos/01-fencing-validation/) | HA chaos test — hard node failure + Pacemaker STONITH |
 | [Demo 2: Database HA](docs/demos/02-database-ha/) | PostgreSQL StatefulSet survives planned and unplanned node failure |

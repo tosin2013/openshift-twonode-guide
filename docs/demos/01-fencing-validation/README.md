@@ -29,23 +29,28 @@ export SSH_KEY=~/.ssh/openshift-twonode-ed25519
 Verify cluster readiness before starting:
 
 ```bash
-# Both nodes must show Ready
-oc get nodes
-
-# Must return nothing (all operators Available)
-oc get clusteroperators | grep -v "True.*False.*False"
-
-# Both nodes Online, all resources Started, no Failed Resource Actions
-ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
+# Run the 7-signal pre-flight health check — all checks must pass before proceeding
+bash scripts/tnf-preflight-validate.sh
 ```
 
-> **If `pcs status` shows any `Failed Resource Actions`** (stale records from a previous run), clear them before proceeding:
+The script verifies: Pacemaker quorum, etcd member count and health, Kubernetes API responsiveness, cluster operator status, STONITH resource state, and (if present) ODF health. A passing run looks like:
+
+```
+[PASS] Pacemaker quorum: 2 nodes online
+[PASS] etcd: 2 members, all healthy
+[PASS] Kubernetes API: reachable
+[PASS] Cluster operators: all Available
+[PASS] STONITH resources: Started
+Pre-flight complete: 5/5 checks passed. Safe to proceed.
+```
+
+> **If any check fails**, resolve the underlying issue before continuing. A failing pre-flight check means the demo will not produce clean results and may make cluster recovery more difficult.
+
+> **If `pcs status` shows stale `Failed Resource Actions`** from a previous run, clear them first:
 >
 > ```bash
 > ssh -i $SSH_KEY core@192.168.49.21 sudo pcs resource cleanup
 > ```
->
-> Stale failed resource actions do not prevent the cluster from functioning but will obscure new failures during the test.
 
 ---
 

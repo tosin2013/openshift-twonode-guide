@@ -13,6 +13,7 @@ This guide covers the most common failure modes encountered when deploying and o
 5. [Installation Failures](#5-installation-failures)
 6. [OVNKubernetes Networking Issues](#6-ovnkubernetes-networking-issues)
 7. [Cluster Recovery After Total Outage](#7-cluster-recovery-after-total-outage)
+8. [ODF + Demo 5 Specific Issues](#8-odf--demo-5-specific-issues)
 
 ---
 
@@ -441,3 +442,278 @@ ls -lt /var/lib/etcd-backup/
 > sudo crontab -l
 > # Add: 0 */6 * * * /usr/local/bin/etcd-backup.sh
 > ```
+
+---
+
+## 8. ODF + Demo 5 Specific Issues
+
+This section covers failure modes specific to the OpenShift Data Foundation + DRBD
+deployment (Demo 5) on a two-node TNF cluster. The root cause of each failure is
+unique to the two-node topology because there is no quorum margin — any loss of an
+etcd member is immediately fatal.
+
+---
+
+### 8.1 `panic: removed all voters` — API Complete Outage After Fence
+
+**Severity: Critical.** This failure causes total loss of the Kubernetes API.
+
+#### Symptom
+
+After applying `node.kubernetes.io/out-of-service` taints to fence a node for ODF
+HA validation, the kube-apiserver on the surviving node stops responding:
+
+```bash
+oc get nodes
+# Error from server: etcdserver: request timed out
+
+# On the surviving node, etcd container log shows:
+sudo podman logs etcd 2>&1 | tail -5
+# panic: removed all voters; must start leader election again
+```
+
+#### Root Cause
+
+The Cluster Etcd Operator (CEO) watches `out-of-service` taints independently of
+Pacemaker. When it sees a taint on node2, CEO removes node2 from the etcd member
+list via the `etcd-operator`. On a **2-node cluster** this leaves node1 with zero
+quorum peers, triggering the fatal panic.
+
+Pacemaker STONITH does **not** trigger CEO member removal — only the taint does.
+
+**This means**: the correct fencing sequence for TNF is:
+
+```
+pcs node fence <node>          ← hardware power-off via Redfish/IPMI
+   ↓  (wait for fence to confirm)
+out-of-service taint           ← now safe; node is physically off, CEO cannot react
+```
+
+**NEVER** apply `out-of-service` taints to a node that is still powered on.
+
+See [ADR-011](../adrs/011-odf-tnf-demo5-fencing-procedure.md) for the full decision
+record, and use [`scripts/odf-ha-fence-node.sh`](../../scripts/odf-ha-fence-node.sh)
+which enforces this order automatically.
+
+#### Recovery Procedure
+
+If the panic has already occurred, follow these steps exactly:
+
+```bash
+export SSH_KEY=~/.ssh/openshift-twonode-ed25519
+
+# Step 1: Delete the stale etcd member data on node2 (the fenced node)
+# This clears the invalid single-voter cluster state
+ssh -i $SSH_KEY core@192.168.49.22 "sudo rm -rf /var/lib/etcd/member"
+
+# Step 2: On node1, tell Pacemaker to start etcd with --force-new-cluster
+# This flag makes etcd bootstrap a new single-member cluster using node1's WAL.
+# The --lifetime reboot ensures the flag is cleared after the next reboot.
+ssh -i $SSH_KEY core@192.168.49.21 \
+  "sudo crm_attribute --lifetime reboot \
+     --node openshift-node1 \
+     --name force_new_cluster \
+     --update openshift-node1"
+
+# Step 3: Clear Pacemaker resource failures and let it restart etcd
+ssh -i $SSH_KEY core@192.168.49.21 "sudo pcs resource cleanup etcd-clone"
+
+# Step 4: Wait ~3 minutes for etcd to start with --force-new-cluster
+# Monitor progress:
+ssh -i $SSH_KEY core@192.168.49.21 "sudo pcs status"
+# Expected: etcd-clone Started: [ openshift-node1 ]
+
+# Step 5: Wait ~2 minutes for kube-apiserver to reconnect to the new etcd
+# Once connected, the API returns without data loss:
+oc get nodes
+# Expected: openshift-node1 Ready
+```
+
+Total expected recovery time: **~5–7 minutes** from starting Step 2.
+
+> For a fully scripted version, run:
+> ```bash
+> bash scripts/etcd-pacemaker-recovery.sh
+> ```
+> Full incident report: [`docs/hardening/etcd-removed-all-voters-v4.21-2026-06-08.md`](../hardening/etcd-removed-all-voters-v4.21-2026-06-08.md)
+
+---
+
+### 8.2 MDS Pod Scheduling Failure — ODF CephFilesystem Stuck
+
+#### Symptom
+
+After deploying the ODF `StorageCluster`, the CephFilesystem shows `Progressing`
+indefinitely. The MDS pods remain in `Pending`:
+
+```bash
+oc get cephfilesystem -n openshift-storage
+# NAME                         PHASE
+# ocs-storagecluster-cephfs    Progressing
+
+oc get pods -n openshift-storage | grep mds
+# rook-ceph-mds-ocs-storagecluster-cephfs-a-*   0/1   Pending
+```
+
+#### Root Cause
+
+On a resource-constrained KVM host, the MDS pods cannot be scheduled because there
+is insufficient CPU or memory. The default ODF resource requests for MDS are too
+high for a KVM dev environment with both control-plane nodes sharing one host.
+
+#### Diagnosis
+
+```bash
+oc describe pod -n openshift-storage \
+  $(oc get pods -n openshift-storage -o name | grep mds | head -1)
+# Look for: Insufficient cpu / Insufficient memory in Events
+```
+
+#### Fix
+
+Patch the MDS daemon resources in the `StorageCluster` spec:
+
+```bash
+oc patch storagecluster ocs-storagecluster -n openshift-storage \
+  --type=merge -p '{
+    "spec": {
+      "managedResources": {
+        "cephFilesystems": {
+          "reconcileStrategy": "ignore"
+        }
+      },
+      "resources": {
+        "mds": {
+          "requests": {"cpu": "100m", "memory": "512Mi"},
+          "limits":   {"cpu": "500m", "memory": "2Gi"}
+        }
+      }
+    }
+  }'
+```
+
+For a complete set of resource overrides for all ODF daemons on a constrained KVM
+host, see [`examples/two-node-drbd/storagecluster-drbd.yaml`](../../examples/two-node-drbd/storagecluster-drbd.yaml)
+and [ADR-009](../adrs/009-odf-tnf-post-install-tuning.md).
+
+---
+
+### 8.3 OSD Crash Loop After Fence — PG Inconsistency
+
+#### Symptom
+
+After a node fence-and-recover cycle, OSD pods restart in a crash loop and Ceph
+reports `HEALTH_WARN` with placement group (PG) inconsistency:
+
+```bash
+oc exec -n openshift-storage rook-ceph-tools-* -- ceph status
+# health: HEALTH_WARN
+# 1 pgs inconsistent
+# 2 scrub errors
+
+oc get pods -n openshift-storage | grep osd
+# rook-ceph-osd-0-*   CrashLoopBackOff
+```
+
+#### Cause
+
+The fence interrupted an in-progress write, leaving a PG in an inconsistent state.
+The OSD refuses to start until the inconsistency is repaired.
+
+#### Fix
+
+```bash
+# 1. Identify the inconsistent PG
+oc exec -n openshift-storage rook-ceph-tools-* -- ceph health detail
+# Note the PG ID, e.g.: 2.1f
+
+# 2. Run a deep scrub on the affected PG
+oc exec -n openshift-storage rook-ceph-tools-* -- \
+  ceph pg deep-scrub 2.1f
+
+# 3. Wait for the scrub to complete (~2-5 min depending on PG size)
+oc exec -n openshift-storage rook-ceph-tools-* -- \
+  ceph status
+# Wait until health: HEALTH_OK
+
+# 4. If inconsistency persists after scrub, repair the PG:
+oc exec -n openshift-storage rook-ceph-tools-* -- \
+  ceph pg repair 2.1f
+```
+
+> **Note**: `ceph pg repair` should only be run after `deep-scrub` confirms the
+> inconsistency. Running repair without deep-scrub first can mask data corruption.
+
+---
+
+### 8.4 OCS Operator Reverts Pool Size to `size=1`
+
+#### Symptom
+
+After setting pool replica count to 2, Ceph reports `HEALTH_WARN: pool has fewer
+replicas than configured` and the OCS operator reverts the pool `size` back to 1.
+
+#### Root Cause
+
+The OCS operator manages pool size by default. On a 2-node cluster it considers
+`size=2` as non-standard and reverts it.
+
+#### Fix
+
+Set `reconcileStrategy: ignore` on all managed resources so OCS stops managing
+pool size:
+
+```yaml
+# In StorageCluster spec:
+spec:
+  managedResources:
+    cephBlockPools:
+      reconcileStrategy: ignore
+    cephFilesystems:
+      reconcileStrategy: ignore
+    cephObjectStores:
+      reconcileStrategy: ignore
+```
+
+Then explicitly apply `size=2` pool manifests from
+[`examples/two-node-drbd/ceph-pools-size2.yaml`](../../examples/two-node-drbd/ceph-pools-size2.yaml).
+
+See [ADR-008](../adrs/008-odf-tnf-pool-replica-strategy.md) for the full decision record.
+
+---
+
+### 8.5 `mon-c` Version Skew — CephFilesystem Stuck in Reconciling
+
+#### Symptom
+
+After deploying the floating monitor (`mon-c`) via `scripts/mon-deployment.sh`,
+the CephFilesystem enters a `Reconciling` loop and never reaches `Ready`. The
+rook-ceph operator logs show version mismatch errors.
+
+#### Root Cause
+
+The `mon-c` deployment uses a different Ceph container image SHA than `mon-a` and
+`mon-b`. Even a minor version difference blocks CephFilesystem reconciliation
+because Ceph's monitor election protocol rejects mixed-version quorums.
+
+#### Fix
+
+1. Get the exact image SHA used by the existing monitors:
+
+```bash
+oc get pod rook-ceph-mon-a-* -n openshift-storage \
+  -o jsonpath='{.spec.containers[0].image}'
+# Example: quay.io/ceph/ceph@sha256:abc123...
+```
+
+2. Update `scripts/mon-deployment.sh` (the `CEPH_IMAGE` variable) to match this
+   exact SHA-pinned image reference.
+
+3. Delete and redeploy `mon-c`:
+
+```bash
+oc delete deployment rook-ceph-mon-c -n openshift-storage
+bash scripts/mon-deployment.sh
+```
+
+See [ADR-010](../adrs/010-odf-tnf-mon-c-downstream-image.md) for the full decision record.

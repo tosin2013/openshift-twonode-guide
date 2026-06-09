@@ -36,7 +36,7 @@ OpenShift 4.20+ introduced two separate two-node topologies that serve different
 
 - **TNF (this repository)** — choose when you have exactly 2 physical servers and no flexibility to add a third. Accepts the Technology Preview risk and reinstall-to-upgrade constraint. Ideal for remote sites where minimizing hardware footprint is non-negotiable.
 
-- **TNA (not covered here)** — choose when a third lightweight node (even a small VM on the same host) is acceptable. This is the GA-supported, production-ready path with a standard upgrade lifecycle. See the future enhancement note in [README.md](index.md).
+- **TNA** — choose when a third lightweight node (even a small VM on the same host) is acceptable. This is the GA-supported, production-ready path with a standard upgrade lifecycle. See [`examples/two-node-arbiter/`](../examples/two-node-arbiter/) for a topology overview and deployment notes.
 
 ---
 

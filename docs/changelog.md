@@ -8,6 +8,43 @@ All notable changes to this guide are documented here. Follows [Keep a Changelog
 
 ---
 
+## [0.2.0] — 2026-06-09
+
+### Added
+
+- **Demo 2: Database HA** — end-to-end validated. PostgreSQL `StatefulSet` with a local PV survives both planned (`oc drain`) and unplanned (`fence_redfish`) node failure. Pod reschedules to the surviving node with persistent data intact.
+- **Demo 3: OpenShift Virtualization** — end-to-end validated. KubeVirt VM (`legacy-inventory`, `RunStrategy: Always`) restarts on surviving node after fence. Key findings: `evictionStrategy` must be `None` for local-RWO VMs; `virt-api` webhook pods on the dead node must be force-deleted to restore webhook function.
+- **Demo 4: Edge AI Inference** — end-to-end validated. YOLOv8-compatible inference service deployed with `initContainer` dependency installation pattern, survives node fence cycle. Confirmed CPU-based inference on OpenShift with `restricted:latest` PodSecurity.
+- **Demo 5: DRBD Edge Storage** — ODF 4.21 + DRBD deployment procedure documented and tested. Floating Ceph monitor (`mon-c`) pattern established. HA fence validation pending (blocked on live cluster with Pacemaker STONITH).
+- **ADR-008 through ADR-011** — four new ODF-specific ADRs covering: pool replica strategy (`reconcileStrategy: ignore`), post-install resource tuning, `mon-c` image version consistency, and Demo 5 safe fencing procedure.
+- **ADR reorganization** — all 11 ADRs standardized with `Alternatives Considered`, `Related ADRs`, `Domain`, and `Updated` fields. Unified ADR index at `docs/adrs/README.md`.
+- **scripts/odf-ha-fence-node.sh** — safe ODF fencing script enforcing STONITH-before-taints order (ADR-011).
+- **scripts/etcd-pacemaker-recovery.sh** — automated etcd recovery via `crm_attribute force_new_cluster` and `pcs resource cleanup`.
+- **scripts/tnf-preflight-validate.sh** — 7-signal cluster health check (quorum, etcd, API, operators, STONITH, ODF) to run before any disruptive operation.
+- **scripts/update-csi-resources.sh** — caps ODF CSI driver CPU/memory to prevent resource starvation on KVM.
+- **scripts/mon-deployment.sh** — deploys the floating Ceph monitor from the externalized template at `examples/two-node-drbd/mon-template.yaml`.
+- **examples/two-node-drbd/** — full set of ODF+DRBD manifests: `storagecluster-drbd.yaml`, `ceph-pools-size2.yaml`, `local-storage-storageclass.yaml`, `osd-pvs.yaml`, `mon-template.yaml`.
+- **docs/hardening/etcd-removed-all-voters-v4.21-2026-06-08.md** — incident report for the 2026-06-08 etcd panic; covers root cause, timeline, and 8-item prevention checklist.
+- **docs/troubleshooting.md §8** — new ODF + Demo 5 section covering: `panic: removed all voters`, MDS scheduling failures, OSD crash loop after fence, OCS operator pool size reversion, and `mon-c` version skew.
+- **CLAUDE.md** — AI agent guidance file with key project lessons, ADR references, and safe fencing rules.
+- **RELEASE-PLAN.md** — v0.2.0 release plan with 14 tasks, schedule, and definition of done.
+- **TODO.md** — rewritten from auto-generated 60-task list to an accurate 9-task open/done summary.
+
+### Fixed
+
+- Demo 1 pre-flight check: replaced ad-hoc `oc get nodes` / `pcs status` block with `scripts/tnf-preflight-validate.sh` call. Provides a single pass/fail signal before any disruptive operation.
+- Demo 5 fence validation section: replaced in-line partial health check with `scripts/tnf-preflight-validate.sh`.
+- ADR numbering collision: `ADR-004-odf-tnf-demo5-fencing-procedure.md` conflicted with `004-etcd-outside-cluster.md`. Renamed to `011-odf-tnf-demo5-fencing-procedure.md`. All cross-references updated.
+- ADR naming inconsistency: ODF ADRs used `ADR-00N-` prefix while architecture ADRs used `00N-`. Dropped the `ADR-` prefix from all four ODF ADRs.
+- `mon-template.yaml` and `mon.yaml` at repository root: `mon-template.yaml` moved to `examples/two-node-drbd/`; stale `mon.yaml` deleted; `mon-deployment.sh` updated to read from the new location.
+
+### Changed
+
+- `docs/troubleshooting.md`: expanded from 443 to 719 lines; added section 8 (ODF + Demo 5) with five sub-sections covering known failure modes.
+- All ADRs: added `Alternatives Considered`, `Related ADRs`, `Updated` date, and consistent `Status:` header format.
+
+---
+
 ## [0.1.0] — 2026-06-03
 
 ### Added
@@ -34,5 +71,6 @@ All notable changes to this guide are documented here. Follows [Keep a Changelog
 
 ---
 
-[Unreleased]: https://github.com/tosin2013/openshift-twonode-guide/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tosin2013/openshift-twonode-guide/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tosin2013/openshift-twonode-guide/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tosin2013/openshift-twonode-guide/releases/tag/v0.1.0
