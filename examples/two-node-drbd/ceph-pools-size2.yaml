@@ -1,0 +1,54 @@
+# Ceph pool configuration for Two-Node ODF (2 OSDs only)
+#
+# Apply AFTER StorageCluster is created and OSDs are Running:
+#   oc apply -f ceph-pools-size2.yaml
+#
+# Why this is needed:
+#   ODF defaults create pools with replicated.size=3 (assumes 3+ nodes).
+#   With only 2 OSDs, size=3 produces PG_DEGRADED HEALTH_WARN which the
+#   OCS operator maps to Degraded=True on the StorageCluster (Phase=Error).
+#   storagecluster-drbd.yaml sets reconcileStrategy=ignore so OCS will not
+#   revert these manifests back to size=3.
+#
+# Source: https://access.redhat.com/articles/7139231
+---
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: ocs-storagecluster-cephblockpool
+  namespace: openshift-storage
+spec:
+  failureDomain: rack
+  replicated:
+    size: 2
+    requireSafeReplicaSize: false
+---
+apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: ocs-storagecluster-cephfilesystem
+  namespace: openshift-storage
+spec:
+  metadataPool:
+    failureDomain: rack
+    replicated:
+      size: 2
+      requireSafeReplicaSize: false
+  dataPools:
+    - name: data0
+      failureDomain: rack
+      replicated:
+        size: 2
+        requireSafeReplicaSize: false
+  metadataServer:
+    activeCount: 1
+    activeStandby: true
+    # Reduced from default 2CPU/6Gi — required for 2-node 8-vCPU clusters.
+    # Default requests exhaust both nodes and leave no room for MDS scheduling.
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "3Gi"

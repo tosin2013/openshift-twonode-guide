@@ -1,14 +1,22 @@
 # StorageCluster for Two-Node ODF with DRBD replication
-# Developer Preview as of ODF 4.16+
+# Developer Preview — ODF 4.21
+# Source: https://access.redhat.com/articles/7139231
 #
 # Prerequisites:
 #   - Both nodes labeled: cluster.ocs.openshift.io/openshift-storage=""
-#   - Each node has a raw block device /dev/vdb (100 GB minimum)
+#   - Each node has a raw block device /dev/vdb (500 GB minimum)
+#   - Each node has a raw block device /dev/vdc (20 GB) configured as DRBD r0
 #   - ODF operator installed and ready
+#   - mon-deployment.sh already run (creates rook-ceph-mon-c Service + Deployment)
+#   - PVs created: oc apply -f osd-pvs.yaml
 #
 # Label nodes before applying:
 #   oc label node openshift-node1 cluster.ocs.openshift.io/openshift-storage=""
 #   oc label node openshift-node2 cluster.ocs.openshift.io/openshift-storage=""
+#
+# After applying, run post-install tuning:
+#   bash scripts/update-csi-resources.sh
+#   oc apply -f examples/two-node-drbd/ceph-pools-size2.yaml
 ---
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
@@ -16,9 +24,15 @@ metadata:
   name: ocs-storagecluster
   namespace: openshift-storage
 spec:
-  # Two-node topology — no third node for quorum
-  # DRBD provides synchronous block replication between the two nodes
+  # Two-node fencing topology — DualReplica
+  # The floating Ceph monitor (mon-c) runs on /dev/drbd0 to provide quorum
+  # when one node is fenced. Features not supported in TNF:
+  # NooBaa, NFS, RGW, Regional DR, Metro-DR
   managedResources:
+    # reconcileStrategy: ignore prevents OCS from reverting pool size patches.
+    # With only 2 OSDs, pools must use size=2. OCS defaults to size=3 (3-node
+    # assumption) and will loop-revert any direct patches if strategy=manage.
+    # Apply ceph-pools-size2.yaml after StorageCluster is created.
     cephBlockPools:
       reconcileStrategy: ignore
     cephFilesystems:
@@ -27,7 +41,67 @@ spec:
       reconcileStrategy: ignore
     cephObjectStores:
       reconcileStrategy: ignore
-  # Storage device sets — one set uses /dev/vdb on each node
+  # NooBaa (Multicloud Object Gateway) is NOT supported in TNF (two-node fencing).
+  # Setting reconcileStrategy: ignore prevents the OCS operator from blocking its
+  # main reconcile loop waiting for NooBaa to initialize — which it never will
+  # on a resource-constrained 2-node cluster.
+  # Source: https://access.redhat.com/articles/7139231 "Features not supported in TNF"
+  multiCloudGateway:
+    reconcileStrategy: ignore
+  # Reduced resource requests for 2-node 8-vCPU nodes.
+  # Default requests (mon: 2CPU, mgr: 2CPU, osd: 2CPU each) exhaust both
+  # nodes at ~99% CPU requests, blocking CSI ctrlplugin scheduling.
+  resources:
+    mon:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    mgr:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    osd:
+      requests:
+        cpu: "100m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    prepareosd:
+      requests:
+        cpu: "50m"
+        memory: "50Mi"
+      limits:
+        cpu: "200m"
+        memory: "200Mi"
+    logcollector:
+      requests:
+        cpu: "10m"
+        memory: "50Mi"
+      limits:
+        cpu: "100m"
+        memory: "100Mi"
+    crashcollector:
+      requests:
+        cpu: "10m"
+        memory: "60Mi"
+      limits:
+        cpu: "100m"
+        memory: "100Mi"
+    exporter:
+      requests:
+        cpu: "10m"
+        memory: "50Mi"
+      limits:
+        cpu: "100m"
+        memory: "200Mi"
+  # Storage device sets — one OSD per node on /dev/vdb (500 GB)
   storageDeviceSets:
     - name: ocs-deviceset-drbd
       count: 1
@@ -41,4 +115,4 @@ spec:
           volumeMode: Block
           resources:
             requests:
-              storage: 90Gi
+              storage: 490Gi

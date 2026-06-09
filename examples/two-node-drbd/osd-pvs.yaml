@@ -1,0 +1,52 @@
+# Static local PVs for ODF OSD disks (/dev/vdb on each node).
+# Edit nodeAffinity.values and local.path to match your environment.
+# For KVM deployments: add a serial number to each VM disk so the device
+# path survives a reboot:
+#   virsh edit <vm>  →  add <serial>osd-disk</serial> inside the <disk> block
+#   Then use /dev/disk/by-id/virtio-osd-disk instead of /dev/vdb.
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv-node1-osd
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  volumeMode: Block
+  local:
+    path: /dev/vdb
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - openshift-node1   # adjust to your node name
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv-node2-osd
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  volumeMode: Block
+  local:
+    path: /dev/vdb
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - openshift-node2   # adjust to your node name

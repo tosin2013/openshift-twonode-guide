@@ -84,11 +84,62 @@ done
 
 ## Continue with Demo 5
 
-After ODF operator is ready, follow the full procedure in [Demo 5 README](../../docs/demos/05-drbd-edge-storage/README.md):
+After ODF operator is ready, follow the full procedure in [Demo 5 README](../../docs/demos/05-drbd-edge-storage/README.md).
 
-1. Label storage nodes
-2. Configure DRBD via `configure-drbd.sh` (from [Red Hat Customer Portal article 7139231](https://access.redhat.com/articles/7139231))
-3. Create PVs for OSDs
-4. Deploy floating Ceph monitor via `mon-deployment.sh`
-5. Create StorageCluster (reference: `storagecluster-drbd.yaml`)
-6. Post-installation tuning
+**Reference:** [ODF 4.21 TNF Developer Preview — Red Hat Customer Portal](https://access.redhat.com/articles/7139231)
+
+### Deployment Order
+
+```bash
+# 1. Label storage nodes
+oc label node openshift-node1 cluster.ocs.openshift.io/openshift-storage=""
+oc label node openshift-node2 cluster.ocs.openshift.io/openshift-storage=""
+oc label node openshift-node1 topology.rook.io/rack=rack0
+oc label node openshift-node2 topology.rook.io/rack=rack1
+
+# 2. Configure DRBD (KMM builds kernel module)
+bash scripts/configure-drbd.sh --floating-mon-disk /dev/vdc
+
+# 3. Create PVs for OSDs
+oc apply -f examples/two-node-drbd/local-storage-storageclass.yaml
+oc apply -f examples/two-node-drbd/osd-pvs.yaml
+
+# 4. Deploy floating Ceph monitor (mon-c on DRBD)
+#    CRITICAL: mon-deployment.sh must use the production downstream Ceph image.
+#    See docs/adrs/010-odf-tnf-mon-c-downstream-image.md
+bash scripts/mon-deployment.sh
+
+# 5. Apply StorageCluster
+#    Includes: reconcileStrategy=ignore for pools, resource overrides for all
+#    Ceph daemons, and multiCloudGateway.reconcileStrategy=ignore (NooBaa unsupported)
+oc apply -f examples/two-node-drbd/storagecluster-drbd.yaml
+
+# 6. Wait for OSDs to be Running (5-15 min)
+oc get pods -n openshift-storage | grep osd
+
+# 7. Apply Ceph pool sizes (size=2 for 2-OSD cluster)
+#    Includes MDS resource overrides in metadataServer.resources
+oc apply -f examples/two-node-drbd/ceph-pools-size2.yaml
+
+# 8. Post-installation CSI tuning
+bash scripts/update-csi-resources.sh
+
+# 9. Wait for StorageCluster to reach Ready
+oc get storagecluster -n openshift-storage -w
+```
+
+### Architecture Decisions
+
+| ADR | Decision |
+|-----|----------|
+| [008](../../docs/adrs/008-odf-tnf-pool-replica-strategy.md) | `reconcileStrategy=ignore` + `ceph-pools-size2.yaml` for size=2 pools |
+| [009](../../docs/adrs/009-odf-tnf-post-install-tuning.md) | Split tuning: declarative daemon resources + `update-csi-resources.sh` for CSI + NooBaa disabled |
+| [010](../../docs/adrs/010-odf-tnf-mon-c-downstream-image.md) | mon-c must use the same downstream Ceph image as mon-a/mon-b |
+
+### Key Scripts
+
+| Script | Purpose | Source |
+|--------|---------|--------|
+| `configure-drbd.sh` | KMM setup, DRBD config | Red Hat article 7139231 |
+| `mon-deployment.sh` | Deploy floating mon-c | Red Hat article 7139231 (modified: use downstream image) |
+| `update-csi-resources.sh` | Reduce CSI driver CPU/memory requests | Red Hat article 7139231 |

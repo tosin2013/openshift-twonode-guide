@@ -1,0 +1,569 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  generation: 1
+  labels:
+    app: rook-ceph-mon
+    app.kubernetes.io/component: cephclusters.ceph.rook.io
+    app.kubernetes.io/created-by: rook-ceph-operator
+    app.kubernetes.io/instance: c
+    app.kubernetes.io/managed-by: rook-ceph-operator
+    app.kubernetes.io/name: ceph-mon
+    app.kubernetes.io/part-of: ocs-storagecluster-cephcluster
+    ceph_daemon_id: c
+    ceph_daemon_type: mon
+    ceph.rook.io/do-not-reconcile: ""
+    mon: c
+    mon_cluster: ${NAMESPACE}
+    mon_daemon: "true"
+    rook.io/operator-namespace: ${NAMESPACE}
+    rook_cluster: ${NAMESPACE}
+  name: rook-ceph-mon-c
+  namespace: ${NAMESPACE}
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: rook-ceph-mon
+      ceph_daemon_id: c
+      mon: c
+      mon_cluster: ${NAMESPACE}
+      rook_cluster: ${NAMESPACE}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: rook-ceph-mon
+        app.kubernetes.io/component: cephclusters.ceph.rook.io
+        app.kubernetes.io/created-by: rook-ceph-operator
+        app.kubernetes.io/instance: c
+        app.kubernetes.io/managed-by: rook-ceph-operator
+        app.kubernetes.io/name: ceph-mon
+        app.kubernetes.io/part-of: ocs-storagecluster-cephcluster
+        ceph_daemon_id: c
+        ceph_daemon_type: mon
+        mon: c
+        mon_cluster: ${NAMESPACE}
+        mon_daemon: "true"
+        rook.io/operator-namespace: ${NAMESPACE}
+        rook_cluster: ${NAMESPACE}
+      name: rook-ceph-mon-c
+      namespace: ${NAMESPACE}
+    spec:
+      affinity: {}
+      containers:
+        - command:
+            - sh
+            - -c
+            - |
+              echo "Mounting device..."
+              mkdir -p /var/lib/ceph/mon/ceph-c
+              mount ${DRBD_DEVICE} /var/lib/ceph/mon/ceph-c
+
+              echo "Starting ceph-mon..."
+              exec ceph-mon \
+                --fsid="$(CEPH_FSID)" \
+                --keyring=/etc/ceph/keyring-store/keyring \
+                --default-log-to-stderr=true \
+                --default-err-to-stderr=true \
+                --default-mon-cluster-log-to-stderr=true \
+                "--default-log-stderr-prefix=debug " \
+                --default-log-to-file=false \
+                --default-mon-cluster-log-to-file=false \
+                --mon-host=$(ROOK_CEPH_MON_HOST) \
+                --mon-initial-members=$(ROOK_CEPH_MON_INITIAL_MEMBERS) \
+                --id=c \
+                --setuser=ceph \
+                --setgroup=ceph \
+                --foreground \
+                --public-addr=${CLUSTER_IP} \
+                --setuser-match-path=/var/lib/ceph/mon/ceph-c/store.db \
+                --public-bind-addr=$(ROOK_POD_IP)
+          env:
+            - name: CONTAINER_IMAGE
+              value: ${CEPH_IMAGE}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: POD_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: limits.memory
+            - name: POD_MEMORY_REQUEST
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: requests.memory
+            - name: POD_CPU_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "1"
+                  resource: limits.cpu
+            - name: POD_CPU_REQUEST
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: requests.cpu
+            - name: CEPH_USE_RANDOM_NONCE
+              value: "true"
+            - name: ROOK_MSGR2
+              value: msgr2_false_encryption_false_compression_false
+            - name: ROOK_CEPH_MON_HOST
+              valueFrom:
+                secretKeyRef:
+                  key: mon_host
+                  name: rook-ceph-config
+            - name: ROOK_CEPH_MON_INITIAL_MEMBERS
+              valueFrom:
+                secretKeyRef:
+                  key: mon_initial_members
+                  name: rook-ceph-config
+            - name: ROOK_POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: CEPH_FSID
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: fsid
+          image: ${CEPH_IMAGE}
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            exec:
+              command:
+                - env
+                - -i
+                - sh
+                - -c
+                - "\noutp=\"$(ceph --admin-daemon /run/ceph/ceph-mon.c.asok mon_status
+                  2>&1)\"\nrc=$?\nif [ $rc -ne 0 ]; then\n\techo \"ceph daemon health
+                  check failed with the following output:\"\n\techo \"$outp\" | sed -e
+                  's/^/> /g'\n\texit $rc\nfi\n"
+            failureThreshold: 3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          name: mon
+          ports:
+            - containerPort: 3300
+              name: tcp-msgr2
+              protocol: TCP
+            - containerPort: 6789
+              name: tcp-msgr1
+              protocol: TCP
+          resources: {}
+          securityContext:
+            capabilities:
+              drop:
+                - NET_RAW
+                - ALL
+            privileged: true
+          startupProbe:
+            exec:
+              command:
+                - env
+                - -i
+                - sh
+                - -c
+                - "\noutp=\"$(ceph --admin-daemon /run/ceph/ceph-mon.c.asok mon_status
+                  2>&1)\"\nrc=$?\nif [ $rc -ne 0 ]; then\n\techo \"ceph daemon health
+                  check failed with the following output:\"\n\techo \"$outp\" | sed -e
+                  's/^/> /g'\n\texit $rc\nfi\n"
+            failureThreshold: 6
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: rook-config-override
+              readOnly: true
+            - mountPath: /run/ceph
+              name: ceph-daemons-sock-dir
+            - mountPath: /etc/ceph/keyring-store/
+              name: rook-ceph-mons-keyring
+              readOnly: true
+            - mountPath: /var/log/ceph
+              name: rook-ceph-log
+            - mountPath: /var/lib/ceph/crash
+              name: rook-ceph-crash
+            - mountPath: /var/lib/ceph/mon/ceph-c
+              name: ceph-daemon-data
+            - mountPath: /dev
+              name: dev
+            - mountPath: /etc/drbd.conf
+              name: drbd-conf
+            - mountPath: /etc/drbd.d
+              name: drbd-dir
+          workingDir: /var/log/ceph
+        - command:
+            - /bin/bash
+            - -x
+            - -e
+            - -m
+            - -c
+            - "\nCEPH_CLIENT_ID=ceph-mon.c\nPERIODICITY=daily\nLOG_ROTATE_CEPH_FILE=/etc/logrotate.d/ceph\nLOG_MAX_SIZE=500M\nROTATE=7\nADDITIONAL_LOG_FILES=\n\n#
+              edit the logrotate file to only rotate a specific daemon log\n# otherwise
+              we will logrotate log files without reloading certain daemons\n# this might
+              happen when multiple daemons run on the same machine\nsed -i \"s|*.log|$CEPH_CLIENT_ID.log
+              $ADDITIONAL_LOG_FILES|\" \"$LOG_ROTATE_CEPH_FILE\"\n\n# replace default
+              daily with given user input\nsed --in-place \"s/daily/$PERIODICITY/g\" \"$LOG_ROTATE_CEPH_FILE\"\n\n#
+              replace rotate count, default 7 for all ceph daemons other than rbd-mirror\nsed
+              --in-place \"s/rotate 7/rotate $ROTATE/g\" \"$LOG_ROTATE_CEPH_FILE\"\n\nif
+              [ \"$LOG_MAX_SIZE\" != \"0\" ]; then\n\t# adding maxsize $LOG_MAX_SIZE at
+              the 4th line of the logrotate config file with 4 spaces to maintain indentation\n\tsed
+              --in-place \"4i \\ \\ \\ \\ maxsize $LOG_MAX_SIZE\" \"$LOG_ROTATE_CEPH_FILE\"\nfi\n\nwhile
+              true; do\n\t# we don't force the logrorate but we let the logrotate binary
+              handle the rotation based on user's input for periodicity and size\n\tlogrotate
+              --verbose \"$LOG_ROTATE_CEPH_FILE\"\n\tsleep 15m\ndone\n"
+          image: ${CEPH_IMAGE}
+          imagePullPolicy: IfNotPresent
+          name: log-collector
+          resources: {}
+          securityContext:
+            capabilities:
+              drop:
+                - NET_RAW
+                - ALL
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          tty: true
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: rook-config-override
+              readOnly: true
+            - mountPath: /run/ceph
+              name: ceph-daemons-sock-dir
+            - mountPath: /var/log/ceph
+              name: rook-ceph-log
+            - mountPath: /var/lib/ceph/crash
+              name: rook-ceph-crash
+        - command:
+            - sh
+            - -c
+            - |
+              REAL_HOSTNAME=$(cat /host/etc/hostname)
+              echo "Setting hostname to: $REAL_HOSTNAME"
+              echo "$REAL_HOSTNAME" > /proc/sys/kernel/hostname
+              echo "Hostname after change:"
+              uname -n
+              sleep infinity
+          image: ${DRBD_UTILS_IMAGE}
+          imagePullPolicy: Always
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    echo "Running preStop: unmount + demote"
+                    sleep 5
+                    for i in $(seq 1 10); do
+                      if umount /var/lib/ceph/mon/ceph-c 2>/dev/null; then
+                        echo "Unmounted by sidecar"
+                      fi
+                      if drbdadm secondary ${DRBD_RESOURCE_NAME} --config-file /etc/drbd.conf; then
+                        echo "Successfully demoted"
+                        break
+                      fi
+                      echo "Retry in 1s..."
+                      sleep 1
+                    done
+          name: shut-down-app
+          resources: {}
+          securityContext:
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /dev
+              name: dev
+            - mountPath: /etc/drbd.conf
+              name: drbd-conf
+            - mountPath: /etc/drbd.d
+              name: drbd-dir
+            - mountPath: /host
+              name: host-root
+              readOnly: true
+      dnsPolicy: ClusterFirst
+      initContainers:
+        - command:
+            - sh
+            - -c
+            - |
+              set -e
+              umount /var/lib/ceph/mon/ceph-c || true
+              REAL_HOSTNAME=$(cat /host/etc/hostname)
+              echo "Setting hostname to: $REAL_HOSTNAME"
+              echo "$REAL_HOSTNAME" > /proc/sys/kernel/hostname
+              echo "Hostname after change:"
+              uname -n
+              echo "Promoting DRBD tesdata to Primary..."
+              drbdadm primary ${DRBD_RESOURCE_NAME} --config-file /etc/drbd.conf
+              echo "DRBD init steps completed"
+          image: ${DRBD_UTILS_IMAGE}
+          imagePullPolicy: Always
+          name: drbd-init
+          resources: {}
+          securityContext:
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /dev
+              name: dev
+            - mountPath: /etc/drbd.conf
+              name: drbd-conf
+            - mountPath: /etc/drbd.d
+              name: drbd-dir
+            - mountPath: /host
+              name: host-root
+              readOnly: true
+        - command:
+            - sh
+            - -c
+            - |
+              echo "Mounting device..."
+              mkdir -p /var/lib/ceph/mon/ceph-c
+              mount ${DRBD_DEVICE} /var/lib/ceph/mon/ceph-c
+              trap 'echo "[CLEANUP] Unmounting DRBD..."; umount /var/lib/ceph/mon/ceph-c || true' TERM INT EXIT
+
+              echo "Running chown..."
+              exec chown \
+                --verbose \
+                --recursive \
+                ceph:ceph \
+                /var/log/ceph \
+                /var/lib/ceph/crash \
+                /run/ceph \
+                /var/lib/ceph/mon/ceph-c
+          image: ${CEPH_IMAGE}
+          imagePullPolicy: IfNotPresent
+          name: chown-container-data-dir
+          resources: {}
+          securityContext:
+            capabilities:
+              drop:
+                - NET_RAW
+                - ALL
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: rook-config-override
+              readOnly: true
+            - mountPath: /run/ceph
+              name: ceph-daemons-sock-dir
+            - mountPath: /etc/ceph/keyring-store/
+              name: rook-ceph-mons-keyring
+              readOnly: true
+            - mountPath: /var/log/ceph
+              name: rook-ceph-log
+            - mountPath: /var/lib/ceph/crash
+              name: rook-ceph-crash
+            - mountPath: /var/lib/ceph/mon/ceph-c
+              name: ceph-daemon-data
+            - mountPath: /dev
+              name: dev
+            - mountPath: /etc/drbd.conf
+              name: drbd-conf
+            - mountPath: /etc/drbd.d
+              name: drbd-dir
+        - command:
+            - sh
+            - -c
+            - |
+              echo "Mounting device..."
+              mkdir -p /var/lib/ceph/mon/ceph-c
+              mount ${DRBD_DEVICE} /var/lib/ceph/mon/ceph-c
+              trap 'echo "[CLEANUP] Unmounting DRBD..."; umount /var/lib/ceph/mon/ceph-c || true' TERM INT EXIT
+              echo "Starting ceph-mon..."
+              exec ceph-mon \
+                --fsid="$(CEPH_FSID)" \
+                --keyring=/etc/ceph/keyring-store/keyring \
+                --default-log-to-stderr=true \
+                --default-err-to-stderr=true \
+                --default-mon-cluster-log-to-stderr=true \
+                "--default-log-stderr-prefix=debug " \
+                --default-log-to-file=false \
+                --default-mon-cluster-log-to-file=false \
+                --mon-host=$(ROOK_CEPH_MON_HOST) \
+                --mon-initial-members=$(ROOK_CEPH_MON_INITIAL_MEMBERS) \
+                --id=c \
+                --setuser=ceph \
+                --setgroup=ceph \
+                --public-addr=${CLUSTER_IP} \
+                --mkfs
+          env:
+            - name: CONTAINER_IMAGE
+              value: ${CEPH_IMAGE}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: POD_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: limits.memory
+            - name: POD_MEMORY_REQUEST
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: requests.memory
+            - name: POD_CPU_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "1"
+                  resource: limits.cpu
+            - name: POD_CPU_REQUEST
+              valueFrom:
+                resourceFieldRef:
+                  divisor: "0"
+                  resource: requests.cpu
+            - name: CEPH_USE_RANDOM_NONCE
+              value: "true"
+            - name: ROOK_MSGR2
+              value: msgr2_false_encryption_false_compression_false
+            - name: ROOK_CEPH_MON_HOST
+              valueFrom:
+                secretKeyRef:
+                  key: mon_host
+                  name: rook-ceph-config
+            - name: ROOK_CEPH_MON_INITIAL_MEMBERS
+              valueFrom:
+                secretKeyRef:
+                  key: mon_initial_members
+                  name: rook-ceph-config
+            - name: CEPH_FSID
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: fsid
+          image: ${CEPH_IMAGE}
+          imagePullPolicy: IfNotPresent
+          name: init-mon-fs
+          resources: {}
+          securityContext:
+            capabilities:
+              drop:
+                - NET_RAW
+                - ALL
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: rook-config-override
+              readOnly: true
+            - mountPath: /run/ceph
+              name: ceph-daemons-sock-dir
+            - mountPath: /etc/ceph/keyring-store/
+              name: rook-ceph-mons-keyring
+              readOnly: true
+            - mountPath: /var/log/ceph
+              name: rook-ceph-log
+            - mountPath: /var/lib/ceph/crash
+              name: rook-ceph-crash
+            - mountPath: /var/lib/ceph/mon/ceph-c
+              name: ceph-daemon-data
+            - mountPath: /dev
+              name: dev
+            - mountPath: /etc/drbd.conf
+              name: drbd-conf
+            - mountPath: /etc/drbd.d
+              name: drbd-dir
+      priorityClassName: system-node-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: rook-ceph-default
+      serviceAccountName: rook-ceph-default
+      shareProcessNamespace: true
+      tolerations:
+      - effect: NoExecute
+        key: node.kubernetes.io/not-ready
+        operator: Exists
+        tolerationSeconds: 120
+      volumes:
+        - name: rook-config-override
+          projected:
+            defaultMode: 420
+            sources:
+              - configMap:
+                  items:
+                    - key: config
+                      mode: 292
+                      path: ceph.conf
+                  name: rook-config-override
+        - name: rook-ceph-mons-keyring
+          secret:
+            defaultMode: 420
+            secretName: rook-ceph-mons-keyring
+        - hostPath:
+            path: /var/lib/rook/exporter
+            type: DirectoryOrCreate
+          name: ceph-daemons-sock-dir
+        - hostPath:
+            path: /var/lib/rook/${NAMESPACE}/log
+            type: ""
+          name: rook-ceph-log
+        - hostPath:
+            path: /var/lib/rook/${NAMESPACE}/crash
+            type: ""
+          name: rook-ceph-crash
+        - hostPath:
+            path: /var/lib/rook/mon-c/data
+            type: ""
+          name: ceph-daemon-data
+        - hostPath:
+            path: /dev
+            type: Directory
+          name: dev
+        - hostPath:
+            path: /etc/drbd.conf
+            type: File
+          name: drbd-conf
+        - hostPath:
+            path: /etc/drbd.d
+            type: Directory
+          name: drbd-dir
+        - hostPath:
+            path: /
+            type: ""
+          name: host-root
