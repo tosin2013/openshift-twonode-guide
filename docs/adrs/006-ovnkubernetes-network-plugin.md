@@ -29,6 +29,21 @@ network_type: OVNKubernetes
 
 No alternative network plugin will be documented or supported for this repository.
 
+## Alternatives Considered
+
+### Option A — OpenShiftSDN
+- The legacy CNI plugin for OpenShift; familiar to operators from older clusters
+- **Problem:** OpenShiftSDN is **not supported for TNF**. The TNF topology has an explicit
+  hard dependency on OVNKubernetes. Additionally, OpenShiftSDN is deprecated as of OCP 4.14 and
+  will be removed in a future release — using it would create a migration burden.
+
+### Option B — OVNKubernetes (CHOSEN)
+- Required for TNF topology; default and strategic CNI plugin for OpenShift 4.14+
+- Provides superior network policy, logical network management, and topology awareness
+- Only compliant choice for this repository
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -54,6 +69,15 @@ No alternative network plugin will be documented or supported for this repositor
 2. Document the OVNKubernetes requirement and rationale in `docs/architecture.md`.
 3. Include OVNKubernetes-specific network validation steps in `docs/deployment-guide.md` (post-install validation).
 4. Add OVNKubernetes MTU troubleshooting notes in `docs/troubleshooting.md` for KVM environments.
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — TNF has a hard requirement on
+  OVNKubernetes; this ADR documents why and records the configuration
+- [002: Agent-Based Installer](002-agent-based-installer.md) — `network_type: OVNKubernetes` is
+  set in `cluster.yml` which feeds into the ABI manifest generation
+
+---
 
 ## Related PRD Sections
 

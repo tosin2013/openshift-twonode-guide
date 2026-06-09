@@ -37,6 +37,30 @@ The `openshift-agent-install` repository provides an Ansible-based automation fr
 
 This repository will add a `two-node-fencing` example to that framework rather than creating a parallel deployment mechanism.
 
+## Alternatives Considered
+
+### Option A — IPI (Installer Provisioned Infrastructure)
+- Installer manages hardware via Metal3/Ironic; well-integrated with OpenShift bare-metal operators
+- **Problem:** Requires a full Metal3/Ironic stack as a prerequisite. Complex setup that adds
+  dependencies not present in the target edge environment.
+
+### Option B — UPI (User Provisioned Infrastructure)
+- Full operator control over all hardware provisioning
+- **Problem:** Entirely manual bootstrapping; not automation-friendly. Does not integrate with the
+  existing `openshift-agent-install` framework.
+
+### Option C — Assisted Installer (SaaS)
+- Cloud-hosted wizard for installation; easiest operator experience
+- **Problem:** Requires outbound internet connectivity to the Red Hat Assisted Installer service.
+  Incompatible with future air-gap/disconnected requirements.
+
+### Option D — Agent-Based Installer (ABI) (CHOSEN)
+- Generates a bootable ISO with embedded agent; no external service dependency
+- Purpose-built for bare-metal and disconnected environments
+- Integrates with `tosin2013/openshift-agent-install` automation framework
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -66,7 +90,7 @@ This repository will add a `two-node-fencing` example to that framework rather t
 4. Document bastion host requirements and network access prerequisites in `docs/deployment-guide.md`.
 5. Document the `create-manifests.yml` → ISO generation → `wait-for install-complete` workflow end-to-end.
 
-## Known Bootstrap Ordering Constraint (TNF-Specific)
+## ⚠ Known Bootstrap Ordering Constraint (TNF-Specific)
 
 In 2-node TNF, **node1 is both the ABI rendezvous/bootstrap pivot and a real control plane node**. After `bootstrap-complete`, the Cluster Etcd Operator (CEO) must run installer pods on both nodes to write etcd static pod manifests. However, the CEO cannot run the node1 installer pod until the installed kube-apiserver is accessible (post-bootstrap-complete), and the kube-apiserver cannot start until etcd has quorum. Etcd on node2 starts in 2-member "existing" mode, cannot elect a leader without node1, creating a circular deadlock.
 
@@ -78,6 +102,17 @@ In 2-node TNF, **node1 is both the ABI rendezvous/bootstrap pivot and a real con
 5. The CEO then self-heals: installs node1's etcd manifests and adds node1 as an etcd member.
 
 This is a deterministic failure, not a timing fluke. Without Phase 8.5, every automated deployment will deadlock at this point. The original `example.com` deployment succeeded only because Phase 9 fencing patches were applied manually and changed timing in ways that occasionally allowed the API to come up before the deadlock fully set in.
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — defines the TNF topology that
+  this installer decision serves
+- [003: BMC / Redfish Fencing Strategy](003-bmc-redfish-fencing-strategy.md) — BMC configuration
+  that must be reflected in the `nodes.yml` `bmc.address` fields
+- [007: KVM + sushy-tools Dev Environment](007-kvm-sushy-tools-dev-environment.md) — the KVM
+  environment that ABI deploys into during development
+
+---
 
 ## Related PRD Sections
 

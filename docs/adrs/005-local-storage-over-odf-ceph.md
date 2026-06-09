@@ -25,6 +25,30 @@ The PRD's Demo 2 (Stateful Database HA) explicitly requires persistent storage f
 
 Demo 5 (DRBD Edge Storage) introduces ODF + DRBD as a Developer Preview path. This is explicitly separate from the primary storage architecture to avoid confusion.
 
+## Alternatives Considered
+
+### Option A — Standard ODF/Ceph (3-way replication)
+- Full Ceph cluster with 3 OSD nodes providing replicated, highly-available block/file/object storage
+- **Problem:** Requires a minimum of 3 nodes to maintain Ceph quorum. Fundamentally incompatible
+  with a 2-node cluster — cannot be used here regardless of configuration.
+
+### Option B — LVM Operator / TopoLVM (CHOSEN as primary path)
+- Local block storage provisioned by the LVM Operator on each node's disks
+- Simple to deploy; no additional storage operators or quorum requirements
+- PVCs are node-local — workload follows the disk on failover via drain/scheduling
+
+### Option C — ODF + DRBD (Developer Preview)
+- DRBD replicates a block device across both nodes, enabling a floating PVC accessible from either
+- Provides near-zero RPO for stateful workloads even on hard failure (not just planned drain)
+- **Constraint:** Developer Preview in ODF 4.21; missing NooBaa, NFS, RGW, Regional DR.
+  Documented as Demo 5 — not the default storage recommendation.
+
+### Option D — NFS / external storage
+- Suitable if an external NAS is available; adds an external dependency
+- Not appropriate for an air-gap-ready edge deployment guide
+
+---
+
 ## Decision
 
 **Primary storage architecture**: Use the **LVM Operator (TopoLVM)** for local block storage on each node. PVCs are bound to a specific node's local storage and are available to pods scheduled on that node.
@@ -65,6 +89,21 @@ The repository will **not** use ODF/Ceph as the default storage recommendation. 
 3. In `docs/demos/02-database-ha/README.md`, include a clear "Storage Architecture Note" section explaining why ODF is not used and what the data-loss risk is for hard failure without replication.
 4. In `docs/demos/05-drbd-edge-storage/README.md`, include a prominent "Developer Preview Warning" section listing all unsupported features.
 5. Add a disk latency troubleshooting entry in `docs/troubleshooting.md`.
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — 2-node constraint that eliminates
+  standard 3-way ODF/Ceph
+- [008: ODF TNF Pool Replica Strategy](008-odf-tnf-pool-replica-strategy.md) — how the
+  Developer Preview ODF/DRBD path configures Ceph pools for 2 OSDs
+- [009: ODF TNF Post-Install Tuning](009-odf-tnf-post-install-tuning.md) — resource
+  tuning required for ODF/DRBD to fit within 2-node resource budgets
+- [010: ODF TNF Floating Monitor Image](010-odf-tnf-mon-c-downstream-image.md) — image
+  management requirement specific to the DRBD floating monitor
+- [011: ODF TNF Demo 5 Fencing Procedure](011-odf-tnf-demo5-fencing-procedure.md) — HA
+  validation procedure for the DRBD Developer Preview path
+
+---
 
 ## Related PRD Sections
 

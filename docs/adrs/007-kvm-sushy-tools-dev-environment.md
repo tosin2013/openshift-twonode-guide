@@ -45,6 +45,28 @@ sushy-tools maps Redfish `ResetType` actions (e.g., `ForceOff`, `On`) to `virsh`
 
 The `icm` CLI (referenced in the PRD) is used for memory management on the development host, ensuring sufficient RAM is available for the two KVM VMs running OCP control-plane nodes.
 
+## Alternatives Considered
+
+### Option A — Nested KubeVirt VMs on an OpenShift hub cluster (REJECTED)
+- Used in the original Module 3 approach
+- **Problem:** Root cause of all Module 3 failures: MAC address regeneration on restart broke ABI
+  static network config, nested virtualization degraded OCP control-plane performance, fakefish-
+  kubevirt UDN unreachability blocked fencing agent connectivity. Requires an RHACM hub cluster
+  as a prerequisite.
+
+### Option B — KVM + sushy-tools on local development host (CHOSEN)
+- Static MAC addresses in libvirt XML are stable across VM restarts — solves the Module 3 root cause
+- sushy-tools provides a genuine Redfish API; `fence_redfish` works identically to production BMCs
+- Single-host setup: no hub cluster required
+- KVM hardware virtualization provides near-native CPU performance for OCP control-plane workloads
+
+### Option C — Physical bare-metal servers
+- Ideal production target; no virtualization overhead
+- **Problem:** Not practical for iterative development (slow re-deployment, physical access needed).
+  The KVM environment is explicitly designed to faithfully simulate bare metal.
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -79,6 +101,17 @@ The `icm` CLI (referenced in the PRD) is used for memory management on the devel
 6. Provide the sushy-tools → libvirt VM UUID mapping procedure.
 7. Document how to construct the `bmc.address` Redfish URL from the sushy-tools endpoint and VM UUID.
 8. Include a "KVM vs Bare Metal" comparison table in `docs/deployment-guide.md` showing which steps differ.
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — the TNF topology this KVM
+  environment simulates
+- [002: Agent-Based Installer](002-agent-based-installer.md) — ABI is deployed into this KVM
+  environment; static MAC addresses set here are used in `nodes.yml`
+- [003: BMC / Redfish Fencing Strategy](003-bmc-redfish-fencing-strategy.md) — sushy-tools is the
+  Redfish emulator referenced in that ADR; this ADR documents the KVM-specific setup
+
+---
 
 ## Related PRD Sections
 

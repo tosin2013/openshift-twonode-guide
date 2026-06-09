@@ -31,6 +31,30 @@ This unified approach means:
 - Only the BMC address and credentials differ between bare-metal and KVM deployments.
 - Development testing of fencing behavior is a faithful simulation of production behavior.
 
+## Alternatives Considered
+
+### Option A — Use fence_ipmi instead of fence_redfish
+- IPMI is an older protocol available on virtually all server BMCs
+- **Problem:** IPMI sends credentials in plaintext and lacks Redfish's structured REST API.
+  OpenShift's TNF documentation and `two-node-toolbox` target Redfish specifically. IPMI is
+  not tested or validated for TNF.
+
+### Option B — Use fakefish-kubevirt as the Redfish emulator (REJECTED)
+- fakefish-kubevirt maps Redfish calls to KubeVirt VM lifecycle operations via the Kubernetes API
+- **Problem:** This was the root cause of Module 3 failures: fakefish required a running RHACM
+  hub cluster, UDN network reachability issues blocked fencing agent connectivity, and MAC address
+  regeneration on VM restart broke static network configs. Not a faithful Redfish implementation.
+
+### Option C — Use sushy-tools as the Redfish emulator (CHOSEN for KVM)
+- sushy-tools is a Red Hat-maintained OpenStack project providing a genuine Redfish API over libvirt
+- Maps `ResetType` Redfish actions directly to `virsh` power commands
+- Works identically to production Redfish BMCs from the `fence_redfish` perspective
+
+### Option D — Use real Redfish BMC for development
+- Not practical without physical servers; eliminates the ability to iterate quickly on a dev host
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -60,6 +84,19 @@ This unified approach means:
 4. Include BMC connectivity validation steps in the pre-deployment checklist.
 5. In `docs/demos/01-fencing-validation/`, include a manual `fence_redfish` test before the automated Pacemaker test.
 6. Document fencing timeout tuning parameters in `docs/troubleshooting.md`.
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — TNF topology that mandates
+  hardware STONITH; this ADR defines how that requirement is satisfied
+- [004: etcd Managed Outside the Cluster](004-etcd-outside-cluster.md) — etcd architecture that
+  depends on Pacemaker STONITH succeeding before etcd member removal occurs
+- [007: KVM + sushy-tools Dev Environment](007-kvm-sushy-tools-dev-environment.md) — sushy-tools
+  as the Redfish emulator for KVM development; fence_redfish is used identically in both
+- [011: ODF TNF Demo 5 Fencing Procedure](011-odf-tnf-demo5-fencing-procedure.md) — the
+  HA validation procedure that depends on a working Pacemaker STONITH resource
+
+---
 
 ## Related PRD Sections
 

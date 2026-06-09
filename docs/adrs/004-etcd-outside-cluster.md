@@ -2,7 +2,7 @@
 
 **Status**: Accepted
 **Date**: 2026-06-02
-**Updated**: 2026-06-03
+**Updated**: 2026-06-08 (incident-driven hardening — etcd panic recovery constraint added)
 **Domain**: cluster-data-plane / quorum-management
 
 ## Context
@@ -95,6 +95,55 @@ sudo crictl exec ${ETCD_CTR} sh -c '
     member list -w table'
 ```
 Note: all `ETCDCTL_*` env vars must be unset before passing flags — etcd v3.6 enforces no-conflict between env vars and CLI flags.
+
+## ⚠ Incident-Driven Constraint (Added 2026-06-08 — Hardening)
+
+**Incident**: Applying `node.kubernetes.io/out-of-service=nodeshutdown` taints to a live node via
+`oc adm taint` (without prior Pacemaker STONITH) caused the Cluster Etcd Operator (CEO) to
+interpret the taint as a fence event and **remove the tainted node from the etcd member list**.
+In a 2-node cluster, this leaves 0 voters → `panic: removed all voters` on the tainted node's
+etcd → the surviving node cannot form quorum → kube-apiserver unresponsive.
+
+**Root violation**: The ADR assumption "Pacemaker STONITH provides coordinated failover" was
+bypassed. The CEO is a Kubernetes workload that also monitors node state and can remove etcd
+members independently of Pacemaker — it does not check whether the node was fenced via STONITH
+before acting.
+
+**Constraints added**:
+1. **Never apply `out-of-service` taints before Pacemaker has confirmed the node is powered off.**
+   The correct order is: `pcs node fence <node>` → confirm fenced (node NotReady) → apply taints.
+2. **`out-of-service` taints are for RWO PVC failover signaling, not for fencing.** They must
+   only be applied to nodes that are already powered off via STONITH.
+3. **Demo 5 validation must use `pcs node fence` (Redfish/IPMI), not manual taints**, to avoid
+   triggering the CEO member-removal race condition.
+
+**Recovery procedure** (if etcd panics due to `removed all voters`):
+```bash
+# Step 1: Wipe corrupt member directory on the panicked node
+ssh core@<panic-node> sudo rm -rf /var/lib/etcd/member
+
+# Step 2: Set force_new_cluster attribute on the node with clean WAL data
+ssh core@<clean-node> sudo crm_attribute --lifetime reboot \
+  --node <clean-node-hostname> --name force_new_cluster \
+  --update <clean-node-hostname>
+
+# Step 3: Trigger Pacemaker to restart etcd
+ssh core@<clean-node> sudo pcs resource cleanup etcd-clone
+
+# Step 4: Wait for etcd (~3 min) then kube-apiserver (~2 min)
+watch "ssh core@<clean-node> sudo pcs status | grep etcd"
+```
+
+## Related ADRs
+
+- [001: TNF Topology Selection](001-tnf-topology-selection.md) — TNF topology decision that
+  mandates Pacemaker-managed etcd; includes the incident-driven constraint update
+- [003: BMC / Redfish Fencing Strategy](003-bmc-redfish-fencing-strategy.md) — Pacemaker STONITH
+  prerequisite; etcd promotion only occurs after STONITH confirms node power-off
+- [011: ODF TNF Demo 5 Fencing Procedure](011-odf-tnf-demo5-fencing-procedure.md) — the
+  correct STONITH-before-taints sequence for HA validation; references this ADR's recovery commands
+
+---
 
 ## Related PRD Sections
 
