@@ -361,22 +361,42 @@ oc logs drbd-writer -n default
 
 ### Fence Node 1 and Verify Failover
 
+> ⚠ **Critical order for 2-node TNF**: Always use `pcs node fence` BEFORE applying
+> `out-of-service` taints. Applying taints to a live node triggers the etcd-operator to
+> remove it from the etcd member list. On a 2-node cluster this causes `panic: removed all voters`
+> → complete API outage. See [011](../../adrs/011-odf-tnf-demo5-fencing-procedure.md)
+> for full explanation and recovery procedure.
+
 ```bash
 export SSH_KEY=~/.ssh/openshift-twonode-ed25519
+
+# --- Pre-flight: confirm etcd and cluster are healthy ---
+ssh -i $SSH_KEY core@192.168.49.22 sudo pcs status | grep -A5 "etcd-clone"
+# Expected: Started: [openshift-node1 openshift-node2], no Failed Resource Actions
 
 # Check which node the PVC is bound to
 PVC_NODE=$(oc get pods -n default -o wide | grep drbd-writer | awk '{print $7}')
 echo "PVC was on: ${PVC_NODE}"
 
-# Apply ODF-recommended taints before fencing (allows RWO failover)
+# --- Step 1: Fence Node 1 via Pacemaker STONITH (powers off via Redfish) ---
+# This MUST happen before applying taints — see ADR-004.
+ssh -i $SSH_KEY core@192.168.49.22 \
+  sudo pcs node fence openshift-node1
+
+# Wait for node to go NotReady
+echo "Waiting for openshift-node1 to go NotReady..."
+for i in $(seq 1 12); do
+  STATUS=$(oc get node openshift-node1 --no-headers 2>/dev/null | awk '{print $2}')
+  echo "$(date +%H:%M:%S) openshift-node1 status=$STATUS"
+  [[ "$STATUS" == "NotReady" ]] && break
+  sleep 10
+done
+
+# --- Step 2: Apply out-of-service taints (ONLY after node is confirmed powered off) ---
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoSchedule
-
-# Fence Node 1 via Pacemaker
-ssh -i $SSH_KEY core@192.168.49.21 \
-  sudo pcs node fence openshift-node1
 
 # Watch node status
 oc get nodes -w
@@ -484,6 +504,51 @@ for NODE in openshift-node1 openshift-node2; do
     -p='[{"op": "remove", "path": "/status/modules/0"}]'
 done
 ```
+
+### etcd panic: "removed all voters" — API completely unresponsive
+
+**Symptom**: `oc` commands time out with `context deadline exceeded` after applying
+`out-of-service` taints. This happens when taints were applied to a live node BEFORE
+Pacemaker fenced it, causing the etcd-operator to remove the node from etcd membership.
+
+**Check**:
+```bash
+SSH_KEY=~/.ssh/openshift-twonode-ed25519
+# Check etcd Pacemaker status
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status | grep -E "etcd|Failed"
+# Check etcd podman container exit code on each node
+for IP in 192.168.49.21 192.168.49.22; do
+  echo "--- $IP ---"
+  ssh -i $SSH_KEY core@$IP \
+    'sudo podman ps -a --filter "name=etcd" --format "{{.Status}}" 2>&1'
+done
+```
+
+**Recovery**:
+```bash
+SSH_KEY=~/.ssh/openshift-twonode-ed25519
+
+# Identify the clean node: "Exited (0) ..." means clean WAL data
+# (vs "Exited (2) ..." which means panic/corrupted)
+
+# Step 1: Wipe corrupted etcd member directory on the panic node
+ssh -i $SSH_KEY core@<panic-node-ip> sudo rm -rf /var/lib/etcd/member
+
+# Step 2: Set force_new_cluster on the clean node
+ssh -i $SSH_KEY core@<clean-node-ip> \
+  sudo crm_attribute --lifetime reboot \
+    --node <clean-node-hostname> \
+    --name force_new_cluster \
+    --update <clean-node-hostname>
+
+# Step 3: Trigger Pacemaker etcd restart
+ssh -i $SSH_KEY core@<clean-node-ip> sudo pcs resource cleanup etcd-clone
+
+# Step 4: Monitor (etcd takes ~3 min; kube-apiserver reconnects ~2 min after)
+watch "ssh -i $SSH_KEY core@<clean-node-ip> sudo pcs status | grep etcd"
+```
+
+See [011](../../adrs/011-odf-tnf-demo5-fencing-procedure.md) for full details and root cause.
 
 ### OSD pod down after node recovery
 
