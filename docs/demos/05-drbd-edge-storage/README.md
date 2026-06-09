@@ -300,9 +300,32 @@ The StorageCluster CR references the local-storage-odf StorageClass and sets `re
 
 ### Step 7: Post-Installation Tuning
 
+On a two-node KVM host, ODF's CSI controller pods request more CPU than is
+available on a heavily-loaded control-plane node — causing `rook-ceph-mon-a`,
+`rook-ceph-osd-1`, and `rook-ceph-mds-a` to stay `Pending` indefinitely.
+This script caps the CSI driver CPU/memory requests so the remaining ODF pods
+can schedule. **This must be run before the Demo Validation fence test.**
+
 ```bash
-# Optimize resource consumption for the two-node environment
-bash update-csi-resources.sh
+# Run from the repository root
+bash scripts/update-csi-resources.sh
+```
+
+Verify the tuning freed capacity and the Pending pods scheduled:
+
+```bash
+# Wait up to 5 minutes for all ODF pods to reach Running
+watch -n10 "oc get pods -n openshift-storage --no-headers | grep -v Running | grep -v Completed"
+# Expected: no output (all pods Running or Completed)
+
+# Confirm Ceph is still healthy after the restart
+oc get cephcluster -n openshift-storage \
+  -o jsonpath='Ceph health: {.items[0].status.ceph.health}{"\n"}'
+# Expected: Ceph health: HEALTH_OK
+
+# Confirm both OSDs are now up (need 2 OSDs for full replica protection)
+oc get pods -n openshift-storage --no-headers | grep "rook-ceph-osd"
+# Expected: rook-ceph-osd-0 Running, rook-ceph-osd-1 Running
 ```
 
 ### Step 8: Verify the StorageClasses
