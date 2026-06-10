@@ -1,0 +1,11 @@
+---
+# OLM OperatorGroup scoped to the cert-manager operator namespace.
+# AllNamespaces InstallMode allows the operator to manage Certificate resources
+# across all namespaces from a single ClusterIssuer.
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: openshift-cert-manager-operator
+spec:
+  upgradeStrategy: Default

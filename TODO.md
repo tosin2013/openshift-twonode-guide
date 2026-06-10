@@ -1,9 +1,8 @@
 # TODO — openshift-twonode-guide
 
-_Last reviewed: 2026-06-09. The 60 ADR-generated tasks from the 2026-06-02
-auto-generation are now collapsed here; the vast majority were completed
-during the initial v0.1.0 development sprint. Only genuine open work
-remains below._
+_Last reviewed: 2026-06-09. All doc/infra/hardening items verified complete.
+Two items requiring a live cluster remain open (H-3, F-1). Demo 6 validated
+and marked complete. Target: v1.0.0 by 2026-06-27._
 
 ---
 
@@ -11,31 +10,31 @@ remains below._
 
 | Category | Open | Done |
 |----------|------|------|
-| HARDENING | 3 | 5 |
+| HARDENING | 1 | 7 |
+| FEATURE | 0 | 1 |
 | FIX | 1 | 1 |
-| DOCS | 3 | 6 |
-| INFRA | 2 | 1 |
-| **Total** | **9** | **13** |
+| DOCS | 0 | 9 |
+| INFRA | 0 | 3 |
+| **Total** | **2** | **21** |
+
+> **2 items remain open and require a live cluster:**
+> - **H-3** — validate `scripts/etcd-pacemaker-recovery.sh` on live cluster (intentionally triggered etcd panic)
+> - **F-1** — complete Demo 5 HA fence validation with `scripts/odf-ha-fence-node.sh`
 
 Release plan: [RELEASE-PLAN.md](RELEASE-PLAN.md) | Version target: v0.2.0 | Due: 2026-06-27
 
 ---
 
-## Open — Must Do Before v0.2.0
+## Open — Required Before v1.0.0 Release (Needs Live Cluster)
 
 ### HARDENING
 
-- [ ] **H-1** Wire `scripts/tnf-preflight-validate.sh` into Demo 1 and Demo 5
-  pre-flight steps (add a "Run pre-flight check" step at the top of each
-  demo README before any destructive operation).
-  _File: `docs/demos/01-fencing-validation/README.md`,
-  `docs/demos/05-drbd-edge-storage/README.md`_
+- [x] **H-1** Wire `scripts/tnf-preflight-validate.sh` into Demo 1 and Demo 5
+  pre-flight steps. ✅ Present in both READMEs (Demo 1 Prerequisites section,
+  Demo 5 Step 3).
 
-- [ ] **H-2** Add `pcs resource restart etcd-clone` to Demo 1 **Step 7**
-  (post-fence recovery). Pacemaker shows `etcd-clone: Stopped` after
-  fence even when the etcd container is running; the restart clears the
-  stale resource state.
-  _File: `docs/demos/01-fencing-validation/README.md`_
+- [x] **H-2** Add `pcs resource restart etcd-clone` to Demo 1 **Step 7**
+  (post-fence recovery). ✅ Present at Demo 1 Step 7 with conditional restart logic.
 
 - [ ] **H-3** Run `scripts/etcd-pacemaker-recovery.sh` against a live
   recovery scenario to validate it works end-to-end. Script was created
@@ -45,11 +44,13 @@ Release plan: [RELEASE-PLAN.md](RELEASE-PLAN.md) | Version target: v0.2.0 | Due:
 
 ### FEATURE
 
-- [ ] **N-1** Validate Demo 6 end-to-end on a live cluster with ODF in `HEALTH_OK`
+- [x] **N-1** Validate Demo 6 end-to-end on a live cluster with ODF in `HEALTH_OK`
   state. Run `virtctl migrate`, confirm `VirtualMachineInstanceMigration` reaches
   `Succeeded`, verify UID unchanged and heartbeat log has no gaps. Update
   `docs/demos/06-vm-live-migration/README.md` with actual timings and output.
-  _Requires: live TNF + ODF cluster (Demo 5 deployed)_
+  _Validated 2026-06-09. Manual migration: 3s, node2→node1, UID unchanged.
+  Maintenance cordon migration: node1→node2, UID unchanged. README updated with
+  TNF-specific drain workaround, CephFS Filesystem-mode fix, and 7 Known Issues._
 
 ### FIX
 
@@ -63,7 +64,7 @@ Release plan: [RELEASE-PLAN.md](RELEASE-PLAN.md) | Version target: v0.2.0 | Due:
 
 ### DOCS
 
-- [ ] **D-3** Add ODF/etcd panic section to `docs/troubleshooting.md`.
+- [x] **D-3** Add ODF/etcd panic section to `docs/troubleshooting.md`.
   The 2026-06-08 incident ("panic: removed all voters") is documented in
   the hardening report but NOT in the troubleshooting guide. Add a new
   section **8. ODF + Demo 5 Specific Issues** covering:
@@ -75,29 +76,23 @@ Release plan: [RELEASE-PLAN.md](RELEASE-PLAN.md) | Version target: v0.2.0 | Due:
   - OSD crash loop after forced fence (clear PG inconsistency)
   _File: `docs/troubleshooting.md`_
 
-- [ ] **D-4** Create `docs/hardware-spec-ibm-cloud.md`. Recommend a
-  specific IBM Cloud bare-metal server profile that can run all 5 demos.
-  Include: recommended profile SKU, vCPU count, RAM, disk layout (boot,
-  etcd NVMe, OSD disks), network, and estimated hourly cost.
-  _Section 7 of `docs/architecture.md` has generic minimums; this doc
-  gives an actionable IBM Cloud-specific recommendation._
+- [x] **D-4** Create `docs/hardware-spec-ibm-cloud.md`. ✅ Complete — recommended
+  `bx2-metal-32x128` profile with disk layout, network config, IPMI/Redfish
+  setup, cost estimates, and pre-deployment hardware validation steps.
 
-- [ ] **D-5** Add `examples/two-node-arbiter/` stub. A minimal
-  `README.md` explaining TNA topology, when to choose it over TNF, and
-  a pointer to the OCP docs. No full implementation required.
-  Also update `docs/architecture.md` section 1 to link to this stub.
+- [x] **D-5** Add `examples/two-node-arbiter/` stub. ✅ Complete — `README.md`
+  with TNF vs TNA comparison table, when-to-choose guidance, and future
+  implementation plan.
 
 ### INFRA
 
-- [ ] **I-2** Update `docs/changelog.md` with v0.2.0 entry covering:
-  Demos 2–5 validation, Demo 5 etcd panic incident + hardening,
-  ADR reorganisation (ADR-008–011), new scripts (5), CLAUDE.md.
-  _File: `docs/changelog.md`_
+- [x] **I-2** Update `docs/changelog.md` with v0.2.0 entry. ✅ Complete —
+  covers Demos 2–5+6 validation, etcd panic incident, ADR-008–011,
+  5 new scripts, CLAUDE.md, and RELEASE-PLAN.md.
 
-- [ ] **I-3** Add GitHub Actions CI workflow for YAML lint on
-  `examples/` templates. Lint `cluster.yml`, `nodes.yml`, and all
-  `*.yaml` files in `examples/two-node-drbd/` on every PR to `main`.
-  _File: `.github/workflows/yaml-lint.yml`_
+- [x] **I-3** Add GitHub Actions CI workflow for YAML lint. ✅ Complete —
+  `.github/workflows/yaml-lint.yml` lints `examples/two-node-fencing/` and
+  `examples/two-node-drbd/` on push/PR to `main`.
 
 ---
 
@@ -151,6 +146,7 @@ complete. Key evidence:
 | Demo 3: OpenShift Virtualization (KubeVirt VM HA) | ✅ Validated |
 | Demo 4: Edge AI Inference (YOLOv8) | ✅ Validated |
 | Demo 5: DRBD Edge Storage (ODF + DRBD) | 🔶 Deployed + hardened; HA fence validation pending |
+| Demo 6: VM Live Migration (OpenShift Virt + ODF CephFS) | ✅ Validated 2026-06-09 (virtctl migrate + maintenance drain) |
 
 ### Hardening (v0.2.0 sprint — done)
 

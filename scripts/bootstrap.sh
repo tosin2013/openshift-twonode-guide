@@ -30,6 +30,9 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 FRAMEWORK_DIR="${ACTUAL_HOME}/openshift-agent-install"
 
 # ── Configuration ────────────────────────────────────────────────────────────
+# OCP_VERSION is pinned to a specific release. To use a different version:
+#   export OCP_VERSION=4.22.0 && sudo -E bash scripts/bootstrap.sh
+# Check available releases: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/
 OCP_VERSION="${OCP_VERSION:-4.22.0-rc.5}"
 CLUSTER_NAME="${CLUSTER_NAME:-twonode}"
 # Set HOST_PRIVATE_IP to your host's private network IP (e.g. from: ip route get 1 | awk '{print $7; exit}')

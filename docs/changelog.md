@@ -8,7 +8,18 @@ All notable changes to this guide are documented here. Follows [Keep a Changelog
 
 ### Added
 
-- **Demo 6: VM Live Migration** — new demo showing zero-downtime VM migration between nodes using ODF CephFS (`ReadWriteMany`) storage. Covers `virtctl migrate` (manual) and `oc adm drain` (maintenance-driven) triggers, heartbeat continuity validation, and KVM-specific tuning for migration bandwidth. Clearly scoped as experimental on 2-node TNF; documents Red Hat's 3-worker-node recommendation and why this topology is still functional.
+- **ADR-012: cert-manager + Let's Encrypt** — decision record for installing Red Hat's `cert-manager-operator` (OLM, `stable-v1` channel) with Let's Encrypt DNS-01 ACME ClusterIssuers on both TNF and TNA clusters. Documents why DNS-01 is required (private Ingress VIP), TNF single-replica availability behaviour, and staging→production promotion pattern to avoid rate limit exhaustion.
+- **examples/cert-manager/** — full manifest set: `namespace.yaml`, `operator-group.yaml`, `subscription.yaml`, `cluster-issuer-staging.yaml`, `cluster-issuer-production.yaml`, `wildcard-certificate.yaml`, and `dns-secret-examples/` templates for AWS Route53, Cloudflare, and Google Cloud DNS.
+- **docs/deployment-guide.md §10** — new "Post-Install Certificate Management" section covering operator installation, DNS provider secret creation, staging→production promotion, and Ingress controller configuration.
+- **docs/troubleshooting.md §9** — new "cert-manager Issues" section covering: `CertificateRequest Failed` / DNS secret misconfigured, ACME rate limit exceeded (staging promotion pattern), cert-manager pods not scheduling on TNF control-plane nodes, and expected availability behaviour after STONITH fencing.
+- **mkdocs.yml** — added ADRs 008–012 (previously missing from nav) and new "Examples" section with cert-manager entry.
+
+### Fixed
+
+- **cert-manager namespace correction** — validated live against TNF cluster (2026-06-10): the Red Hat cert-manager-operator deploys operands (controller, webhook, cainjector) to `cert-manager` namespace, not `openshift-cert-manager`. All DNS provider Secret templates, deployment guide, troubleshooting guide, and README updated to reference `cert-manager` namespace. This was caught during live validation: staging wildcard cert issued in 1m50s, production wildcard cert (issuer `Let's Encrypt YR2`, DNS-01 Route53) issued in 1m50s, IngressController patched, OpenShift console confirmed serving publicly-trusted TLS.
+- **Demo 6: VM Live Migration** — end-to-end validated on live TNF cluster (2026-06-09). ODF CephFS `ReadWriteMany` PVC, `virtctl migrate` (3-second migration, node2→node1, UID unchanged), and maintenance-driven cordon+migrate path. README updated with 7 Known Issues: CephFS `volumeMode: Filesystem` requirement, TNF drain guard-pod race condition, CirrOS guest-agent limitation, Rook OSD CPU reconciliation pattern, and migration bandwidth tuning. Switched primary image to Fedora Cloud with SSH key injection and `qemu-guest-agent` for full Step 6 heartbeat validation.
+- **TODO.md** — updated to mark N-1 (Demo 6) complete; all 8 pre-v0.2.0 items verified complete.
+- **RELEASE-PLAN.md** — v1.0.0 release plan with task schedule through 2026-06-27.
 
 ---
 

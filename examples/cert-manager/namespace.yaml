@@ -1,0 +1,13 @@
+---
+# Namespace for the cert-manager operator itself (OLM installs operator here)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-cert-manager-operator
+  labels:
+    openshift.io/cluster-monitoring: "true"
+# NOTE: The cert-manager operands (controller, webhook, cainjector) are deployed
+# by the operator into a separate namespace called "cert-manager" (not
+# "openshift-cert-manager"). This namespace is created automatically by the
+# operator — you do not need to create it manually.
+# DNS provider Secrets must be placed in the "cert-manager" namespace.

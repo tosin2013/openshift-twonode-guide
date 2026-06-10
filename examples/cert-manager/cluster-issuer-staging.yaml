@@ -1,0 +1,69 @@
+---
+# Let's Encrypt STAGING ClusterIssuer — use this first to test your DNS-01
+# solver configuration without hitting Let's Encrypt production rate limits.
+#
+# Staging certificates are signed by "Fake LE Root X1" — your browser will
+# show a warning, but the issuance workflow is identical to production.
+# Only switch to the production issuer once staging succeeds.
+#
+# REQUIRED before applying:
+#   1. Replace REPLACE_ME_NAMESPACE with the namespace containing your DNS secret
+#      (use: cert-manager  — the operator creates this namespace automatically)
+#   2. Replace REPLACE_ME_SECRET_NAME with the name of your DNS provider secret
+#      (see dns-secret-examples/ for templates)
+#   3. Configure the correct solver for your DNS provider under spec.acme.solvers
+#
+# See: https://cert-manager.io/docs/configuration/acme/dns01/
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    # Replace with a real email address — Let's Encrypt sends expiry notices here
+    email: admin@REPLACE_ME_BASE_DOMAIN
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      # ── AWS Route53 ──────────────────────────────────────────────────────
+      # Uncomment and configure if your DNS is hosted on Route53
+      # - dns01:
+      #     route53:
+      #       region: us-east-1
+      #       accessKeyIDSecretRef:
+      #         name: route53-credentials
+      #         key: access-key-id
+      #       secretAccessKeySecretRef:
+      #         name: route53-credentials
+      #         key: secret-access-key
+
+      # ── Cloudflare ───────────────────────────────────────────────────────
+      # Uncomment and configure if your DNS is hosted on Cloudflare
+      # - dns01:
+      #     cloudflare:
+      #       apiTokenSecretRef:
+      #         name: cloudflare-api-token
+      #         key: api-token
+
+      # ── Google Cloud DNS ─────────────────────────────────────────────────
+      # Uncomment and configure if your DNS is hosted on Google Cloud DNS
+      # - dns01:
+      #     cloudDNS:
+      #       project: REPLACE_ME_GCP_PROJECT_ID
+      #       serviceAccountSecretRef:
+      #         name: gcp-dns-sa
+      #         key: service-account.json
+
+      # ── Fallback: leave one solver enabled ───────────────────────────────
+      - dns01:
+          # Replace with your actual solver configuration above
+          # This placeholder prevents syntax errors; remove after configuring
+          route53:
+            region: us-east-1
+            accessKeyIDSecretRef:
+              name: route53-credentials
+              key: access-key-id
+            secretAccessKeySecretRef:
+              name: route53-credentials
+              key: secret-access-key

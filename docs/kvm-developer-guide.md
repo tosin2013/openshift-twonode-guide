@@ -11,23 +11,45 @@
 
 ## Quick Start (TL;DR)
 
-> Prerequisites: root access, `~/pull-secret.json`, `~/.aws/credentials`, AWS Route53 hosted zone for your domain.
+> **Prerequisites**:
+> - Root access on the KVM host
+> - `~/pull-secret.json` — download from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
+> - `~/.aws/credentials` — AWS IAM credentials with Route53 write access
+> - AWS Route53 hosted zone for your base domain
+> - **Host resources**: 64 GB RAM recommended (32 GB minimum), 400 GB free disk on `/var/lib/libvirt/images`, VT-x/AMD-V enabled
+
+> **This is not a single command.** The full path has ~8 steps including a ~10-minute manual VyOS console session (Step 3b). The deploy script itself (`deploy-tnf-kvm.sh`) runs unattended for ~60 minutes after that.
 
 ```bash
 # 1. Bootstrap the host (packages, OCP binaries, dnsmasq, SSH keys)
-export HOST_PRIVATE_IP="<your-host-private-ip>"
+#    Find your host's private IP first:
+export HOST_PRIVATE_IP="$(ip route get 1 | awk '{print $7; exit}')"
+echo "HOST_PRIVATE_IP=${HOST_PRIVATE_IP}"   # verify this looks correct before continuing
 sudo -E bash ~/openshift-twonode-guide/scripts/bootstrap.sh
 
-# 2. Configure DNS + VyOS router
+# 2. Format the data disk (one-time, skip if already done)
+sudo mkfs.ext4 -L vmimages /dev/vdb
+sudo mkdir -p /var/lib/libvirt/images
+echo "LABEL=vmimages /var/lib/libvirt/images ext4 defaults 0 2" | sudo tee -a /etc/fstab
+sudo mount /var/lib/libvirt/images
+
+# 3. Configure DNS + VyOS router
 cd ~/openshift-agent-install
 sudo ./hack/configure-dnsmasq-entries.sh add examples/two-node-fencing/cluster.yml
 ./hack/verify-dns-resolution.sh examples/two-node-fencing/cluster.yml   # all 5 must be ✅
 export ACTION=create && sudo bash hack/vyos-router.sh
-# → Open Cockpit at https://<YOUR-PUBLIC-IP>:9090, install VyOS to disk (~10 min)
-# → Then run: sshpass -p 'vyos' scp -o StrictHostKeyChecking=no ~/vyos-config.sh vyos@192.168.122.2:/tmp/ && sshpass -p 'vyos' ssh -o StrictHostKeyChecking=no vyos@192.168.122.2 'vbash /tmp/vyos-config.sh'
+# ⚠ MANUAL STEP REQUIRED (~10 min): Open Cockpit at https://<YOUR-PUBLIC-IP>:9090
+#   Navigate to Virtual Machines → vyos-router → Console
+#   Run "install image", accept defaults, reboot, then configure eth0 and SSH
+#   Full instructions: see Step 3b below
+# → After manual VyOS steps, apply VLAN config:
+sshpass -p 'vyos' scp -o StrictHostKeyChecking=no ~/vyos-config.sh vyos@192.168.122.2:/tmp/
+sshpass -p 'vyos' ssh -o StrictHostKeyChecking=no vyos@192.168.122.2 'vbash /tmp/vyos-config.sh'
 
-# 3. Deploy the cluster (fully automated — ~60 min)
+# 4. Deploy the cluster (fully automated — ~60 min)
 sudo bash ~/openshift-twonode-guide/scripts/deploy-tnf-kvm.sh
+# After install-complete, monitor the background fencing patcher:
+tail -f ~/generated_assets/twonode/phase9-fencing-patch.log
 ```
 
 > For external access via Route53 see [Step 5b](#step-5b--route53-dns-ibm-cloud-external-access).
@@ -101,8 +123,19 @@ flowchart TD
 Run `scripts/bootstrap.sh` as root. It is fully idempotent — safe to re-run.
 
 ```bash
-sudo bash ~/openshift-twonode-guide/scripts/bootstrap.sh
+# Find and export your host's private IP before running
+export HOST_PRIVATE_IP="$(ip route get 1 | awk '{print $7; exit}')"
+echo "Using HOST_PRIVATE_IP=${HOST_PRIVATE_IP}"   # verify this is correct
+
+sudo -E bash ~/openshift-twonode-guide/scripts/bootstrap.sh
 ```
+
+> **OCP version**: The script defaults to `4.22.0-rc.5`. To use a GA release or different RC:
+> ```bash
+> export OCP_VERSION=4.22.0
+> sudo -E bash ~/openshift-twonode-guide/scripts/bootstrap.sh
+> ```
+> Check available versions at: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/
 
 **What it installs / configures:**
 
@@ -397,6 +430,13 @@ Monitor installation progress manually (~45–60 min):
 ~/openshift-agent-install/bin/openshift-install agent wait-for install-complete \
   --dir ~/generated_assets/twonode/ --log-level info
 ```
+
+> **After `install-complete`**: A background Phase 9 process patches the Pacemaker fencing secrets. Do not close your terminal until you confirm it succeeded:
+> ```bash
+> tail -f ~/generated_assets/twonode/phase9-fencing-patch.log
+> # Expected final line: "✅ Phase 9 complete — fencing secrets patched, tnf-setup-job restarted"
+> ```
+> If you miss this step, Pacemaker fencing will be broken (fence_redfish SSL errors). See the troubleshooting section.
 
 ---
 

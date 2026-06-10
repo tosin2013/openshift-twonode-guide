@@ -25,6 +25,8 @@ This section contains hands-on demonstrations that validate the HA capabilities 
 
 See [KVM Developer Guide](../kvm-developer-guide.md) for cluster deployment instructions.
 
+> **Demo 5 and Demo 6** require an additional disk on each node for ODF (Ceph). If you deployed with the standard `examples/two-node-fencing` site config, your VMs do not have this disk. You must redeploy using `examples/two-node-drbd` which adds a 500 GB ODF disk per node. See the [Demo 5 README](05-drbd-edge-storage/README.md) for the full ODF deployment sequence.
+
 ## What "Validated" Means
 
 A demo is marked **Validated** when it has been run end-to-end against a live cluster, all expected outcomes have been observed, and the README has been updated with actual command output and timing data. Stubs contain the planned scenario and skeleton steps but have not yet been executed.

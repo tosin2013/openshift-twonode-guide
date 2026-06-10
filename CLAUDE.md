@@ -107,6 +107,35 @@ oc get pod -n openshift-storage -l app=rook-ceph-mon \
 
 See: `docs/adrs/010-odf-tnf-mon-c-downstream-image.md`
 
+### [WARNING] ODF CSI resource starvation → ODF pods stuck Pending after deployment
+
+**Symptom pattern**: After ODF deployment, `rook-ceph-mon-a`, `rook-ceph-osd-1`, and
+`rook-ceph-mds-a` are stuck `Pending`. `StorageCluster` phase shows `Error`. `CephCluster`
+may still report `HEALTH_OK`. Node1 is at ≥90% CPU requests.
+
+**Always verify** two things after running `update-csi-resources.sh`:
+1. Delete stale `Error`/`CrashLoopBackOff` CSI pods — they retain pre-patch CPU reservations
+2. Confirm pod count (not just `HEALTH_OK`) — run with `--odf` flag: `bash scripts/tnf-preflight-validate.sh --odf`
+
+**Root cause**: Default ODF CSI controller pods request far more CPU than available on a
+2-node KVM cluster. The `update-csi-resources.sh` script lowers requests, but stale pods
+in `Error` state keep their old reservations until explicitly deleted.
+
+**Correct remediation sequence**:
+```bash
+# 1. Patch CSI driver resource requests
+bash scripts/update-csi-resources.sh   # now includes stale-pod deletion + wait
+
+# 2. Verify all ODF pods running (not just Ceph health)
+bash scripts/tnf-preflight-validate.sh --odf
+# Signal 9 checks mon/osd/mds counts; Signal 10 checks node CPU headroom
+```
+
+**Do not proceed to Demo 5 fence validation** if Signal 9 or Signal 10 fail.
+
+See: `docs/hardening/odf-csi-cpu-starvation-v4.21-2026-06-09.md`
+See: `docs/adrs/009-odf-tnf-post-install-tuning.md`
+
 ---
 
 ## Pacemaker / etcd Quick Reference

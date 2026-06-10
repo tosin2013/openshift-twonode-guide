@@ -36,17 +36,25 @@ For a full explanation including the TNF vs TNA comparison, see [architecture.md
 
 ## Quick Start
 
+### Choose Your Path
+
+| Environment | Guide |
+|---|---|
+| IBM Cloud KVM (single host, VMs) | [kvm-developer-guide.md](kvm-developer-guide.md) — full walkthrough including VyOS router, HAProxy, Route53 |
+| Physical bare-metal servers | [deployment-guide.md](deployment-guide.md) — Redfish BMC, ABI, bare-metal specifics |
+
 ### Prerequisites
 
 - A bastion host with `ansible`, `openshift-install`, `oc`, and `git`
 - Two physical servers (or KVM VMs) with Redfish-capable BMCs (or `sushy-tools` for KVM)
-- Pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
+- Pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret) saved to `~/pull-secret.json`
+- **KVM path**: AWS credentials in `~/.aws/credentials` (Route53 external DNS), plus your host's private IP (`ip route get 1 | awk '{print $7; exit}'`)
 
 ### 1. Clone this repository and the upstream tooling
 
 ```bash
 git clone https://github.com/tosin2013/openshift-agent-install
-git clone https://github.com/YOUR_ORG/openshift-twonode-guide
+git clone https://github.com/tosin2013/openshift-twonode-guide
 
 # Copy the two-node-fencing example into the openshift-agent-install clusters directory
 cp -r openshift-twonode-guide/examples/two-node-fencing openshift-agent-install/clusters/
@@ -102,11 +110,12 @@ The demos are designed to be run sequentially (each builds on a healthy cluster 
 
 ```
 docs/demos/
-├── 01-fencing-validation/   ← Start here — proves the cluster's HA foundation works
-├── 02-database-ha/          ← Stateful PostgreSQL workload through planned and unplanned failure
+├── 01-fencing-validation/        ← Start here — proves the cluster's HA foundation works
+├── 02-database-ha/               ← Stateful PostgreSQL workload through planned and unplanned failure
 ├── 03-openshift-virtualization/  ← Legacy VM HA alongside containers
-├── 04-edge-ai-inference/    ← Object detection inference at the edge
-└── 05-drbd-edge-storage/    ← Replicated block storage (Developer Preview)
+├── 04-edge-ai-inference/         ← Object detection inference at the edge
+├── 05-drbd-edge-storage/         ← Replicated block storage (Developer Preview, requires ODF disk)
+└── 06-vm-live-migration/         ← Zero-downtime VM migration via ODF CephFS (Experimental, requires Demo 5)
 ```
 
 Each demo directory contains a `README.md` with objectives, prerequisites, step-by-step instructions, and expected validation output.

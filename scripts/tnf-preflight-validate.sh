@@ -126,14 +126,18 @@ echo ""
 echo "--- Signal 5: No stale out-of-service taints ---"
 ALL_CLEAN=true
 for NODE_NAME in openshift-node1 openshift-node2; do
-  TAINTS=$(oc get node "${NODE_NAME}" --kubeconfig="${KUBECONFIG}" \
-    -o jsonpath='{.spec.taints}' 2>/dev/null | \
-    python3 -c "
+  RAW_TAINTS=$(oc get node "${NODE_NAME}" --kubeconfig="${KUBECONFIG}" \
+    -o jsonpath='{.spec.taints}' 2>/dev/null)
+  if [[ -z "${RAW_TAINTS}" ]]; then
+    TAINTS="CLEAN"
+  else
+    TAINTS=$(echo "${RAW_TAINTS}" | python3 -c "
 import json, sys
 taints = json.load(sys.stdin) or []
 bad = [t.get('key','') for t in taints if 'out-of-service' in t.get('key', '')]
 print(','.join(bad) if bad else 'CLEAN')
 " 2>/dev/null || echo "UNKNOWN")
+  fi
   if [[ "${TAINTS}" == "CLEAN" ]]; then
     check_pass "${NODE_NAME}: no out-of-service taints"
   elif [[ "${TAINTS}" == "UNKNOWN" ]]; then
@@ -206,7 +210,59 @@ if [[ "${CHECK_ODF}" == "true" ]]; then
     check_pass "ODF CSI controller pods Running"
   else
     check_warn "Some CSI controller pods not Running: ${CSI_PENDING}"
+    echo "         Hint: Run 'bash scripts/update-csi-resources.sh' to cap CSI CPU requests,"
+    echo "         then delete stale Error pods: oc get pods -n openshift-storage | grep -v Running"
   fi
+
+  # Signal 9: ODF core pod count — HEALTH_OK does not mean all pods are scheduled
+  # Incident 2026-06-09: Ceph reported HEALTH_OK with osd-1 and mon-a Pending.
+  echo "--- Signal 9: ODF core pod count ---"
+  MON_COUNT=$(oc get pods -n openshift-storage --kubeconfig="${KUBECONFIG}" \
+    --no-headers 2>/dev/null | grep "rook-ceph-mon-" | grep "Running" | wc -l || echo 0)
+  OSD_COUNT=$(oc get pods -n openshift-storage --kubeconfig="${KUBECONFIG}" \
+    --no-headers 2>/dev/null | grep "rook-ceph-osd-[0-9]" | grep "Running" | wc -l || echo 0)
+  MDS_COUNT=$(oc get pods -n openshift-storage --kubeconfig="${KUBECONFIG}" \
+    --no-headers 2>/dev/null | grep "rook-ceph-mds-" | grep "Running" | wc -l || echo 0)
+
+  if [[ "${MON_COUNT}" -ge 3 ]]; then
+    check_pass "Ceph monitors Running: ${MON_COUNT}/3"
+  elif [[ "${MON_COUNT}" -ge 2 ]]; then
+    check_warn "Only ${MON_COUNT}/3 Ceph monitors Running — quorum met but degraded"
+  else
+    check_fail "Only ${MON_COUNT}/3 Ceph monitors Running — quorum may be lost"
+  fi
+
+  if [[ "${OSD_COUNT}" -ge 2 ]]; then
+    check_pass "Ceph OSDs Running: ${OSD_COUNT}/2"
+  elif [[ "${OSD_COUNT}" -ge 1 ]]; then
+    check_warn "Only ${OSD_COUNT}/2 Ceph OSDs Running — pool replication not guaranteed"
+  else
+    check_fail "No Ceph OSDs Running — storage unavailable"
+  fi
+
+  if [[ "${MDS_COUNT}" -ge 1 ]]; then
+    check_pass "Ceph MDS Running: ${MDS_COUNT} (CephFilesystem active)"
+  else
+    check_warn "No Ceph MDS Running — CephFilesystem (RWX) unavailable (needed for Demo 6)"
+  fi
+
+  # Signal 10: Node CPU headroom — catch starvation before fence
+  # Incident 2026-06-09: node1 at 98% CPU blocked ODF pod scheduling silently.
+  echo "--- Signal 10: Node CPU headroom ---"
+  for NODE_NAME in openshift-node1 openshift-node2; do
+    CPU_REQ_PCT=$(oc describe node "${NODE_NAME}" --kubeconfig="${KUBECONFIG}" 2>/dev/null | \
+      awk '/Allocated resources/{found=1} found && /cpu/{match($0, /([0-9]+)%/, arr); if (arr[1]) {print arr[1]; exit}}' || echo "")
+    [[ -z "${CPU_REQ_PCT}" ]] && CPU_REQ_PCT="unknown"
+    if [[ "${CPU_REQ_PCT}" == "unknown" ]]; then
+      check_warn "${NODE_NAME}: could not determine CPU allocation"
+    elif [[ "${CPU_REQ_PCT}" -ge 90 ]]; then
+      check_fail "${NODE_NAME}: CPU requests at ${CPU_REQ_PCT}% — insufficient headroom for ODF pod scheduling or fence recovery"
+    elif [[ "${CPU_REQ_PCT}" -ge 75 ]]; then
+      check_warn "${NODE_NAME}: CPU requests at ${CPU_REQ_PCT}% — tight; run 'bash scripts/update-csi-resources.sh' if ODF pods are Pending"
+    else
+      check_pass "${NODE_NAME}: CPU requests at ${CPU_REQ_PCT}% — adequate headroom"
+    fi
+  done
   echo ""
 fi
 

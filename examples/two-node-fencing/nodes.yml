@@ -23,12 +23,15 @@ node_two_mac2: "52:54:00:aa:bb:22"
 nodes:
   - hostname: openshift-node1
     role: master
-    # BMC — sushy-tools Redfish emulator (populated by deploy-on-kvm.sh)
+    # BMC configuration:
+    #   KVM users:        leave this section commented out — deploy-tnf-kvm.sh injects it automatically
+    #                     using the libvirt UUID captured during VM creation.
+    #   Bare-metal users: uncomment and fill in your BMC details.
     # bmc:
-    #   address: redfish-virtualmedia+http://localhost:8000/redfish/v1/Systems/<UUID>
-    #   username: admin
-    #   password: admin
-    #   disableCertificateVerification: true
+    #   address: redfish-virtualmedia://<bmc-ip>/redfish/v1/Systems/<system-id>
+    #   username: <bmc-username>
+    #   password: <bmc-password>
+    #   disableCertificateVerification: false   # set true only for self-signed certs
     rootDeviceHints:
       deviceName: /dev/vda
     interfaces:
@@ -63,12 +66,14 @@ nodes:
 
   - hostname: openshift-node2
     role: master
-    # BMC — sushy-tools Redfish emulator (populated by deploy-on-kvm.sh)
+    # BMC configuration:
+    #   KVM users:        leave this section commented out — deploy-tnf-kvm.sh injects it automatically.
+    #   Bare-metal users: uncomment and fill in your BMC details.
     # bmc:
-    #   address: redfish-virtualmedia+http://localhost:8000/redfish/v1/Systems/<UUID>
-    #   username: admin
-    #   password: admin
-    #   disableCertificateVerification: true
+    #   address: redfish-virtualmedia://<bmc-ip>/redfish/v1/Systems/<system-id>
+    #   username: <bmc-username>
+    #   password: <bmc-password>
+    #   disableCertificateVerification: false
     rootDeviceHints:
       deviceName: /dev/vda
     interfaces:

@@ -14,6 +14,7 @@ This guide covers the most common failure modes encountered when deploying and o
 6. [OVNKubernetes Networking Issues](#6-ovnkubernetes-networking-issues)
 7. [Cluster Recovery After Total Outage](#7-cluster-recovery-after-total-outage)
 8. [ODF + Demo 5 Specific Issues](#8-odf--demo-5-specific-issues)
+9. [cert-manager Issues](#9-cert-manager-issues)
 
 ---
 
@@ -717,3 +718,245 @@ bash scripts/mon-deployment.sh
 ```
 
 See [ADR-010](../adrs/010-odf-tnf-mon-c-downstream-image.md) for the full decision record.
+
+---
+
+## 9. cert-manager Issues
+
+### 9.1 `CertificateRequest` Stuck in `Pending` or `Failed`
+
+#### Symptom
+
+```bash
+oc get certificaterequest -n openshift-ingress
+# NAME                         APPROVED   DENIED   READY   ISSUER                    REQUESTOR
+# wildcard-apps-cert-xxxxx     True                False   letsencrypt-production    cert-manager
+```
+
+`oc describe certificaterequest <name> -n openshift-ingress` shows:
+
+```
+Message: Failed to create Order: ...
+  Error: DNS provider credentials are invalid
+```
+
+or:
+
+```
+Message: Waiting on certificate issuance from order ...
+  Reason: dns01 challenge pending
+```
+
+#### Diagnosis
+
+```bash
+# Check the Order object for the ACME DNS-01 challenge status
+oc get order -n openshift-ingress
+oc describe order -n openshift-ingress <order-name>
+
+# Check the Challenge object
+oc get challenge -n openshift-ingress
+oc describe challenge -n openshift-ingress <challenge-name>
+
+# Check cert-manager controller logs
+# Note: cert-manager operands run in the cert-manager namespace (not openshift-cert-manager)
+oc logs -n cert-manager \
+  $(oc get pods -n cert-manager -l app=cert-manager -o name) \
+  --tail=100
+```
+
+#### Fix — DNS provider secret misconfigured
+
+The most common cause is a missing or incorrect DNS provider secret:
+
+```bash
+# Verify the secret exists in the cert-manager namespace
+# (the operator creates this namespace; DNS secrets must go here, NOT openshift-cert-manager)
+oc get secret -n cert-manager
+
+# Verify the secret keys match what the ClusterIssuer references
+oc describe secret route53-credentials -n cert-manager
+# Keys must match the keyIDs in the ClusterIssuer spec.acme.solvers[].dns01.*SecretRef
+```
+
+If the secret is wrong, delete and recreate it, then delete the failing Order to trigger retry:
+
+```bash
+oc delete order -n openshift-ingress <order-name>
+```
+
+#### Fix — DNS TXT record not propagating
+
+cert-manager waits for the DNS TXT record to propagate before notifying Let's Encrypt.
+If your DNS provider has high TTLs or slow propagation:
+
+```bash
+# Check if the TXT record was created at the DNS provider
+dig TXT _acme-challenge.apps.YOUR_CLUSTER.YOUR_DOMAIN
+
+# If the TXT record exists but cert-manager still fails, check DNS resolver config
+# cert-manager uses the cluster's DNS resolver; on TNF this may resolve internal DNS only
+# Verify outbound DNS resolution from a cluster node:
+oc debug node/<node-name> -- chroot /host \
+  nslookup _acme-challenge.apps.YOUR_CLUSTER.YOUR_DOMAIN 8.8.8.8
+```
+
+---
+
+### 9.2 Let's Encrypt Rate Limit Exceeded
+
+#### Symptom
+
+```bash
+oc describe certificaterequest -n openshift-ingress <name>
+# Message: Failed to finalize order: 429 urn:ietf:params:acme:error:rateLimited
+#   Too many certificates already issued for exact set of domains
+```
+
+#### Cause
+
+Let's Encrypt production has a limit of **5 duplicate certificates per week** per
+registered domain. This is commonly hit when:
+- Testing repeatedly without using the staging issuer first
+- Deleting and re-creating certificates while debugging
+
+#### Fix
+
+Use the staging ClusterIssuer (`letsencrypt-staging`) for all testing. Staging has no
+meaningful rate limits and issues certificates signed by "Fake LE Root X1" (not trusted
+by browsers, but the issuance workflow is identical to production).
+
+```bash
+# Switch the Certificate to staging issuer
+oc patch certificate wildcard-apps-cert \
+  -n openshift-ingress \
+  --type merge \
+  -p '{"spec":{"issuerRef":{"name":"letsencrypt-staging"}}}'
+```
+
+Wait out the rate limit window (7 days from the first duplicate issuance) before switching
+back to the production issuer.
+
+---
+
+### 9.3 cert-manager Pods Not Scheduling on TNF Control-Plane Nodes
+
+#### Symptom
+
+cert-manager pods remain `Pending` indefinitely:
+
+```bash
+# cert-manager operands run in the cert-manager namespace (created automatically by the operator)
+oc get pods -n cert-manager
+# NAME                                       READY   STATUS    RESTARTS   AGE
+# cert-manager-controller-7b9f8c4d9-xxxxx   0/1     Pending   0          5m
+```
+
+```bash
+oc describe pod -n cert-manager <pod-name>
+# Events: ... 0/2 nodes are available: 2 node(s) had taint that the pod didn't tolerate
+```
+
+#### Diagnosis
+
+TNF has no dedicated worker nodes — all workloads run on control-plane nodes that carry
+the `node-role.kubernetes.io/master:NoSchedule` taint. cert-manager's upstream Helm chart
+includes these tolerations by default, but the Red Hat operator may require the
+`CertManager` CR to be patched.
+
+#### Fix
+
+```bash
+# Check if cert-manager CR exists
+oc get certmanager cluster
+
+# Patch the CertManager CR to add control-plane tolerations
+oc patch certmanager cluster \
+  --type merge \
+  -p '{
+    "spec": {
+      "controllerConfig": {
+        "overrideArgs": []
+      },
+      "unsupportedConfigOverrides": {
+        "controller": {
+          "tolerations": [
+            {
+              "key": "node-role.kubernetes.io/master",
+              "operator": "Exists",
+              "effect": "NoSchedule"
+            }
+          ]
+        },
+        "webhook": {
+          "tolerations": [
+            {
+              "key": "node-role.kubernetes.io/master",
+              "operator": "Exists",
+              "effect": "NoSchedule"
+            }
+          ]
+        },
+        "cainjector": {
+          "tolerations": [
+            {
+              "key": "node-role.kubernetes.io/master",
+              "operator": "Exists",
+              "effect": "NoSchedule"
+            }
+          ]
+        }
+      }
+    }
+  }'
+```
+
+> **Note**: The Red Hat cert-manager-operator v1.x typically adds these tolerations
+> automatically for OpenShift clusters. If pods still won't schedule, verify the
+> `CertManager` CR status:
+>
+> ```bash
+> oc describe certmanager cluster
+> ```
+
+---
+
+### 9.4 cert-manager Unavailable After Node Fencing (TNF)
+
+#### Symptom
+
+After a STONITH fencing event on the node hosting cert-manager, certificate renewal
+requests fail while cert-manager is rescheduling.
+
+#### Behavior
+
+This is expected on TNF. cert-manager runs as a single-replica `Deployment`. After node
+fencing:
+
+1. Pacemaker fences the failed node (~30 seconds)
+2. Pacemaker recovers the cluster (etcd + API server return, ~60-90 seconds)
+3. cert-manager pod reschedules on the surviving node (~30 seconds)
+
+Total outage window: approximately 2-3 minutes.
+
+#### Why This Is Acceptable
+
+cert-manager renews certificates **30 days before expiry**. A 2-3 minute outage window
+does not risk certificate expiry. Any ACME challenge interrupted mid-flight will be
+automatically retried by cert-manager with exponential backoff when it comes back up.
+
+#### Monitoring
+
+```bash
+# Check cert-manager pod status after fencing recovery
+oc get pods -n cert-manager
+
+# Check for any failed certificate renewals
+oc get certificate -A
+oc get certificaterequest -A
+
+# Check cert-manager logs for retry activity
+oc logs -n cert-manager \
+  $(oc get pods -n cert-manager -l app=cert-manager -o name) \
+  --tail=50
+```

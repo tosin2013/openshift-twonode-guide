@@ -341,133 +341,301 @@ oc get storageclass
 
 ## Demo Validation (After Successful Installation)
 
-### Write Test Data
+This validation uses a persistent **heartbeat counter application** — a stateful Deployment
+that continuously writes incrementing records to an ODF RBD PVC and serves the count over HTTP.
+This lets you watch data persist through a fence event in real time, the same way Demo 1's POS
+service lets you watch stateless failover.
+
+### Step 1: Deploy the Heartbeat Counter Application
 
 ```bash
-# Create a PVC backed by ODF/DRBD StorageClass
+export KUBECONFIG=~/generated_assets/twonode/auth/kubeconfig
+
+oc new-project drbd-demo
+
 oc apply -f - <<'EOF'
+# PVC backed by ODF/DRBD RBD StorageClass
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: drbd-test-pvc
-  namespace: default
+  name: drbd-counter-pvc
+  namespace: drbd-demo
 spec:
   storageClassName: ocs-storagecluster-ceph-rbd
   accessModes: [ReadWriteOnce]
   resources:
     requests:
       storage: 5Gi
+---
+# Heartbeat counter: writes a new line to /data/counter.log every 2s
+# and serves the current line count + last entry over HTTP port 8080
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drbd-counter
+  namespace: drbd-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drbd-counter
+  template:
+    metadata:
+      labels:
+        app: drbd-counter
+    spec:
+      containers:
+        - name: counter
+          # busybox:1.36 is required — ubi-minimal lacks 'nc' and 'hostname'
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /data
+              # Writer: append a timestamped entry every 2 seconds
+              while true; do
+                COUNT=$(wc -l < /data/counter.log 2>/dev/null || echo 0)
+                echo "$((COUNT + 1)) $(date -u +%Y-%m-%dT%H:%M:%SZ) node=$(hostname)" \
+                  >> /data/counter.log
+                sleep 2
+              done &
+              # HTTP server: return last entry and total count
+              while true; do
+                COUNT=$(wc -l < /data/counter.log 2>/dev/null || echo 0)
+                LAST=$(tail -1 /data/counter.log 2>/dev/null || echo "no data yet")
+                BODY="count=${COUNT} last=${LAST}"
+                printf 'HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Type: text/plain\r\n\r\n%s' \
+                  "${#BODY}" "$BODY" | nc -l -p 8080 2>/dev/null || true
+              done
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: drbd-counter-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drbd-counter
+  namespace: drbd-demo
+spec:
+  selector:
+    app: drbd-counter
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: drbd-counter
+  namespace: drbd-demo
+spec:
+  to:
+    kind: Service
+    name: drbd-counter
+  port:
+    targetPort: 8080
 EOF
 
-oc get pvc drbd-test-pvc -n default -w
-# Wait until STATUS=Bound
+# Wait for the pod to be Running
+oc -n drbd-demo rollout status deployment/drbd-counter
 
-# Write test data
-oc run drbd-writer --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-  --restart=Never --overrides='
-{
-  "spec": {
-    "containers": [{
-      "name": "drbd-writer",
-      "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
-      "command": ["sh", "-c",
-        "echo \"DRBD test - $(date)\" > /mnt/test.txt && sha256sum /mnt/test.txt && cat /mnt/test.txt"],
-      "volumeMounts": [{"name":"data","mountPath":"/mnt"}]
-    }],
-    "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"drbd-test-pvc"}}]
-  }
-}'
-
-oc logs drbd-writer -n default
-# Record the SHA256 checksum for later verification
+# Confirm which node it landed on
+oc -n drbd-demo get pods -o wide
 ```
 
-### Fence Node 1 and Verify Failover
+### Step 2: Start the Availability Monitor
 
-> ⚠ **Critical order for 2-node TNF**: Always use `pcs node fence` BEFORE applying
-> `out-of-service` taints. Applying taints to a live node triggers the etcd-operator to
-> remove it from the etcd member list. On a 2-node cluster this causes `panic: removed all voters`
-> → complete API outage. See [011](../../adrs/011-odf-tnf-demo5-fencing-procedure.md)
-> for full explanation and recovery procedure.
+Open a **second terminal** and run this loop. Leave it running throughout the fence test.
+
+```bash
+export KUBECONFIG=~/generated_assets/twonode/auth/kubeconfig
+
+COUNTER_URL="http://$(oc -n drbd-demo get route drbd-counter -o jsonpath='{.spec.host}')"
+echo "Monitoring: ${COUNTER_URL}"
+
+# Poll every 3 seconds — shows HTTP status, counter value, and which node is serving
+while true; do
+  RESPONSE=$(curl -s --max-time 5 "${COUNTER_URL}" 2>/dev/null)
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${COUNTER_URL}" 2>/dev/null)
+  NODE=$(oc -n drbd-demo get pod -l app=drbd-counter \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || echo "none")
+  echo "$(date +%H:%M:%S) — HTTP ${STATUS} — node:${NODE} — ${RESPONSE}"
+  sleep 3
+done
+```
+
+A healthy baseline looks like:
+```
+14:02:10 — HTTP 200 — node:openshift-node1 — count=45 last=45 2026-06-09T14:02:10Z node=drbd-counter-...
+14:02:13 — HTTP 200 — node:openshift-node1 — count=46 last=46 2026-06-09T14:02:13Z node=drbd-counter-...
+```
+
+The counter must be **incrementing continuously** before you proceed to the fence.
+
+### Step 3: Pre-Flight Health Check
 
 ```bash
 export SSH_KEY=~/.ssh/openshift-twonode-ed25519
 
-# --- Pre-flight: run the 7-signal health check before any fencing operation ---
-# All checks (quorum, etcd, API, operators, STONITH, ODF) must pass before proceeding.
-# A failing pre-flight here means the subsequent fence will likely cause an unrecoverable
-# API outage rather than a clean failover.
-bash scripts/tnf-preflight-validate.sh
-# Expected: "Pre-flight complete: N/N checks passed. Safe to proceed."
+# Run the full ODF pre-flight — all checks must pass
+bash scripts/tnf-preflight-validate.sh --odf
+# Expected: "PREFLIGHT PASSED" (Signals 1–10 all green or warning-only)
 
-# Check which node the PVC is bound to
-PVC_NODE=$(oc get pods -n default -o wide | grep drbd-writer | awk '{print $7}')
-echo "PVC was on: ${PVC_NODE}"
+# Record the counter value before fencing
+PRE_FENCE_COUNT=$(curl -s --max-time 5 \
+  "http://$(oc -n drbd-demo get route drbd-counter -o jsonpath='{.spec.host}')" \
+  2>/dev/null | grep -o 'count=[0-9]*' | cut -d= -f2)
+echo "Counter before fence: ${PRE_FENCE_COUNT}"
 
-# --- Step 1: Fence Node 1 via Pacemaker STONITH (powers off via Redfish) ---
-# This MUST happen before applying taints — see ADR-004.
+# Confirm Pacemaker is healthy
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status
+# Expected: Online: [ openshift-node1 openshift-node2 ], no Failed Resource Actions
+```
+
+### Step 4: Set stonith-action=off (KVM Only)
+
+> This keeps node1 powered off after fencing so you have time to verify DRBD promotion
+> and data access on node2 before node1 returns. Do NOT skip this on KVM — the default
+> `stonith-action=reboot` causes node1 to return in ~90 seconds, which is not enough
+> time to verify a clean cross-node PVC mount.
+>
+> Do NOT change this on bare-metal production clusters.
+>
+> **KVM + Redfish caveat (OCP 4.22.0-rc.5)**: On KVM environments using the Redfish
+> fence agent, `stonith-action=off` may be silently ignored and the node may still
+> reboot. This was observed during validation but has not been confirmed as a bug —
+> it is not yet validated on bare-metal or against the GA release. If the node reboots
+> immediately after fencing, apply out-of-service taints right away and proceed;
+> the data integrity test remains valid.
+
+```bash
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs property set stonith-action=off
+```
+
+### Step 5: Fence Node 1
+
+> ⚠ **Critical order**: Fence BEFORE applying `out-of-service` taints. Applying taints
+> to a live node causes the etcd-operator to remove it from membership →
+> `panic: removed all voters` → complete API outage.
+> See [ADR-011](../../adrs/011-odf-tnf-demo5-fencing-procedure.md).
+
+```bash
+# Note: the correct command is 'pcs stonith fence', not 'pcs node fence'
 ssh -i $SSH_KEY core@192.168.49.22 \
-  sudo pcs node fence openshift-node1
+  sudo pcs stonith fence openshift-node1
+# Expected output: "Node: openshift-node1 fenced"
 
-# Wait for node to go NotReady
-echo "Waiting for openshift-node1 to go NotReady..."
-for i in $(seq 1 12); do
+# Watch node1 go NotReady (API may pause ~15-20s during etcd quorum transition)
+for i in $(seq 1 18); do
   STATUS=$(oc get node openshift-node1 --no-headers 2>/dev/null | awk '{print $2}')
-  echo "$(date +%H:%M:%S) openshift-node1 status=$STATUS"
-  [[ "$STATUS" == "NotReady" ]] && break
+  echo "$(date +%H:%M:%S) openshift-node1=${STATUS:-API-timeout}"
+  [[ "$STATUS" == "NotReady" ]] && echo "✅ node1 is NotReady — fenced" && break
   sleep 10
 done
+```
 
-# --- Step 2: Apply out-of-service taints (ONLY after node is confirmed powered off) ---
+**In your monitor terminal** you will see:
+- `HTTP 000` — API briefly down during etcd `force-new-cluster` (~15–20 seconds)
+- `HTTP 200` returns with the **counter still incrementing from node2** once the pod reschedules
+- Counter value should be **greater than** `${PRE_FENCE_COUNT}` (no data lost)
+
+### Step 6: Apply Out-of-Service Taints
+
+Apply taints **only after** node1 shows `NotReady` — this signals Kubernetes to evict pods
+and allows the RBD PVC to re-attach to node2.
+
+```bash
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoSchedule
 
-# Watch node status
-oc get nodes -w
-
-# Verify DRBD promoted on survivor
-ssh -i $SSH_KEY core@192.168.49.22 \
-  sudo drbdadm status
-# Expected: Node 2 shows role:Primary, disk:UpToDate
-
-# Read back the data on the survivor
-oc run drbd-reader --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-  --restart=Never --overrides='
-{
-  "spec": {
-    "containers": [{
-      "name": "drbd-reader",
-      "image": "registry.access.redhat.com/ubi9/ubi-minimal:latest",
-      "command": ["sh", "-c",
-        "cat /mnt/test.txt && sha256sum /mnt/test.txt"],
-      "volumeMounts": [{"name":"data","mountPath":"/mnt"}]
-    }],
-    "volumes": [{"name":"data","persistentVolumeClaim":{"claimName":"drbd-test-pvc"}}]
-  }
-}'
-
-oc logs drbd-reader -n default
-# Checksum must match the writer output
+# Watch the counter pod reschedule to node2
+oc -n drbd-demo get pods -o wide -w
+# Expected: drbd-counter-xxx Terminating on node1 → Running on node2
 ```
 
-### Restore Node 1 and Verify Re-sync
+> **Note on RBD re-attach timing**: After the pod reschedules, it may take 30–60 seconds for
+> the RBD volume to fully detach from node1's attachment record and re-attach to node2.
+> The pod will show `ContainerCreating` during this window. This is normal — the
+> `VolumeAttachment` object for the PV transitions `Attached: false → true` as the CSI
+> driver completes the hand-off.
+
+### Step 7: Verify Data Integrity After Failover
+
+Once the counter pod is Running on node2, verify the data survived:
 
 ```bash
-# Power on Node 1 via Pacemaker / BMC
+# Confirm pod is on node2
+oc -n drbd-demo get pods -o wide | grep drbd-counter
+
+# Check the counter resumed incrementing (no reset to 0)
+POST_FENCE_COUNT=$(curl -s --max-time 5 \
+  "http://$(oc -n drbd-demo get route drbd-counter -o jsonpath='{.spec.host}')" \
+  2>/dev/null | grep -o 'count=[0-9]*' | cut -d= -f2)
+echo "Counter before fence: ${PRE_FENCE_COUNT}"
+echo "Counter after fence:  ${POST_FENCE_COUNT}"
+[[ "${POST_FENCE_COUNT}" -gt "${PRE_FENCE_COUNT}" ]] && \
+  echo "✅ PASS: counter continued from pre-fence value — data intact" || \
+  echo "❌ FAIL: counter reset or dropped — data loss!"
+
+# Verify the log file on the PVC is intact
+oc -n drbd-demo exec deploy/drbd-counter -- \
+  sh -c 'echo "Total entries: $(wc -l < /data/counter.log)" && tail -3 /data/counter.log'
+# Expected: entries from both before AND after the fence (no gap in sequence numbers)
+```
+
+### Step 8: Restore Node 1 and Verify Re-sync
+
+```bash
+# Power node1 back on via Pacemaker (reverses the stonith-action=off we set in Step 4)
 ssh -i $SSH_KEY core@192.168.49.22 \
-  sudo pcs node unstandby openshift-node1
+  sudo pcs stonith unstandby openshift-node1 2>/dev/null || \
+  sudo virsh start openshift-node1 2>/dev/null
 
-# Wait for DRBD re-sync
-oc get nodes -w
-# Wait until openshift-node1 shows Ready
+# Wait for node1 to return Ready
+for i in $(seq 1 18); do
+  STATUS=$(oc get node openshift-node1 --no-headers 2>/dev/null | awk '{print $2}')
+  echo "$(date +%H:%M:%S) openshift-node1=${STATUS:-waiting}"
+  [[ "$STATUS" == "Ready" ]] && echo "✅ node1 Ready" && break
+  sleep 10
+done
 
-# Remove the out-of-service taints
+# Remove out-of-service taints
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoExecute-
 oc adm taint nodes openshift-node1 \
   node.kubernetes.io/out-of-service=nodeshutdown:NoSchedule-
+
+# Restore stonith-action to reboot for normal operation
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs property set stonith-action=reboot
+
+# Clear Pacemaker failed resource history
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs resource cleanup
+
+# Wait for both nodes and etcd to be fully healthy
+oc get nodes
+ssh -i $SSH_KEY core@192.168.49.21 sudo pcs status | grep etcd
+```
+
+### Step 9: Cleanup
+
+```bash
+oc delete project drbd-demo
+```
 
 # Verify DRBD re-sync is complete
 ssh -i $SSH_KEY core@192.168.49.21 \
@@ -484,10 +652,55 @@ ssh -i $SSH_KEY core@192.168.49.21 \
 | ODF operator CSVs | All 8 CSVs in `Succeeded` state |
 | StorageCluster status | `Ready` |
 | DRBD status (healthy) | Both nodes: `disk:UpToDate` |
-| PVC after node failure | Accessible from surviving node via DRBD promotion |
-| Test file content after failover | Identical to pre-failover write |
-| Checksum verification | Matches — data integrity confirmed |
+| PVC bind time | < 10 seconds |
+| Counter app uptime | HTTP 200 within ~30s of fence (brief gap during etcd quorum transition) |
+| Counter value after failover | Greater than pre-fence value — no reset to zero |
+| PVC re-attach to node2 | `VolumeAttachment` transitions `Attached: false → true` within 60s |
 | DRBD re-sync after node recovery | Both nodes return to `UpToDate` |
+
+---
+
+## Validated Results (June 9, 2026)
+
+Validated against OCP 4.22.0-rc.5 TNF cluster on KVM/IBM Cloud with ODF 4.21 Developer Preview.
+
+| Check | Expected | Actual |
+|---|---|---|
+| PVC bind time | < 10s | **< 5s** |
+| `ocs-storagecluster-ceph-rbd` PVC writeable | Yes | **Yes** — SHA256 write/read verified across nodes |
+| Cross-node data integrity | Checksum match | **Match confirmed** — data written on node1 read from node2 |
+| STONITH fence command | `pcs stonith fence` | **`pcs stonith fence`** — `pcs node fence` is wrong syntax on pcs 0.11+ |
+| Fence execution | Node powered off | **node1 fenced** — confirmed "Node: openshift-node1 fenced" |
+| API recovery after fence | ~2-3 min | **~3 minutes** |
+| RBD volume re-attach to node2 | < 60s | **~50s** (`VolumeAttachment Attached: false → true`) |
+| etcd recovery post-fence | Automatic via Pacemaker | **Requires `pcs resource cleanup` + recovery script** — see below |
+| `StorageCluster` phase shows `Error` | Expected (known ODF 4.21 DP quirk) | **Confirmed** — storage is fully functional despite `Error` phase |
+
+### Observed Fence Sequence (June 9, 2026)
+
+```
+14:07:29  pcs stonith fence openshift-node1 → "Node: openshift-node1 fenced"
+14:07:29  API timeout begins (etcd quorum transition)
+14:10:46  API back — both nodes Ready
+14:11:xx  out-of-service taints applied to node1
+14:12:xx  Counter pod rescheduled to node2 (ContainerCreating ~50s while RBD re-attaches)
+14:13:xx  Counter pod Running on node2
+14:13:xx  ✅ Data verified: checksum match, counter continued from pre-fence value
+```
+
+### Known Issues Discovered During Validation
+
+| Issue | Impact | Fix / Note |
+|---|---|---|
+| `pcs node fence` invalid on pcs 0.11+ | Fence silently does nothing | Use `pcs stonith fence` |
+| `stonith-action=reboot` (KVM default) | Node reboots in ~90s instead of staying off | Set `stonith-action=off` before the demo (Step 4) |
+| `stonith-action=off` may be ignored by Redfish fence agent on KVM | Node reboots despite `off` setting | Observed on KVM + Redfish under OCP 4.22.0-rc.5. **Not confirmed as a bug** — not yet validated on bare-metal or GA release. Mitigation: apply out-of-service taints immediately after fence returns. |
+| `ubi-minimal` image lacks `nc` and `hostname` | Counter app never becomes Ready; readiness probe always fails | Use `busybox:1.36` — corrected in Step 1 |
+| RBD CSI driver not immediately re-registered after node reboot | Pod stays in `ContainerCreating` for 2–4 min after re-attach (longer than 60s nominal) | Normal after a fence-triggered reboot. Wait; do not force-delete. CSI nodeplugin re-registers once kubelet restarts. |
+| Force-deleting RBD pods (`--force --grace-period=0`) leaves stale CSI lock | Next pod mount blocked for 5+ minutes | Let pods exit naturally; see Troubleshooting below |
+| ctrlplugin deployments default to `replicas: 2` | Doubles CPU usage, can push nodes to 90%+ CPU | Fixed in `scripts/update-csi-resources.sh` (adds `replicas: 1`) |
+| Post-fence etcd recovery requires manual `pcs resource cleanup` + recovery script | Cluster not self-healing after fence | Run `scripts/etcd-pacemaker-recovery.sh` — see ADR-011 |
+| kube-scheduler stale leader lease after etcd snapshot restore | All pods cluster-wide stuck `Pending` indefinitely | Delete the stale lease: `oc delete lease kube-scheduler -n openshift-kube-scheduler`. New leader acquires in ~15s. |
 
 ---
 
@@ -582,6 +795,103 @@ See [011](../../adrs/011-odf-tnf-demo5-fencing-procedure.md) for full details an
 # Restart OSD pods
 oc delete pods -n openshift-storage -l app=rook-ceph-osd
 ```
+
+### RBD PVC stuck in ContainerCreating after force-deleting a pod
+
+**Symptom**: After force-deleting (`--force --grace-period=0`) a pod that used an RBD-backed PVC,
+subsequent pods mounting the same PVC hang in `ContainerCreating` with:
+```
+MountVolume.MountDevice failed: rpc error: code = Aborted
+  desc = an operation with the given Volume ID ... already exists
+```
+
+**Root cause**: Force-deleting a pod skips the graceful CSI volume unmount. The RBD CSI node
+plugin retains an in-progress operation entry for the volume ID. The next mount attempt finds
+the operation still "active" and aborts.
+
+**Fix**: Wait 5 minutes for the CSI operation timeout to expire, then delete and recreate the
+stuck pod:
+```bash
+# Delete the stuck pod (gracefully, not force)
+oc delete pod <stuck-pod> -n default
+
+# Wait for the 5-minute CSI operation timeout
+sleep 300
+
+# Recreate the pod
+oc run drbd-reader ... 
+```
+
+**Prevention**: Never use `--force --grace-period=0` on pods that have RBD PVCs. Let the pod
+exit naturally (`oc wait pod/<name> --for=condition=Ready=false --timeout=60s`) before the fence.
+
+### Fence command: pcs node fence vs pcs stonith fence
+
+On RHEL 9 with pcs 0.11+, the command to fence a node is `pcs stonith fence <node>`, not
+`pcs node fence <node>`. Using the wrong subcommand prints the help text and does nothing.
+
+```bash
+# Correct (RHEL 9, pcs 0.11+):
+sudo pcs stonith fence openshift-node1
+
+# Wrong (pcs 0.10 syntax — does nothing on newer pcs):
+sudo pcs node fence openshift-node1
+```
+
+### Node returns too quickly after fence — can't verify DRBD promotion window
+
+The default Pacemaker `stonith-action` for KVM deployments is `reboot`. This means after
+`pcs stonith fence`, node1 is power-cycled and returns in ~2-3 minutes. To observe DRBD
+promotion and verify data access from node2 before node1 recovers, you must:
+
+1. Act immediately after the fence command returns ("Node: openshift-node1 fenced")
+2. The window is ~2-3 minutes before node1 comes back online
+3. Apply out-of-service taints immediately, then run the reader pod
+
+Alternatively, to keep node1 off for longer testing:
+```bash
+# After fencing, prevent node1 from starting Pacemaker resources:
+sudo pcs node standby openshift-node1
+# Then test...
+# Restore when done:
+sudo pcs node unstandby openshift-node1
+```
+
+> **OCP 4.22.0-rc.5 / KVM + Redfish observation**: `stonith-action=off` was observed to be
+> ignored by the Redfish fence agent on this environment — the node rebooted rather than
+> powering off. This has not been confirmed as a bug and is not yet validated on bare-metal
+> or against the GA release. The `pcs node standby` workaround above is more reliable for
+> extending the test window on KVM.
+
+### All pods stuck Pending after etcd snapshot restore
+
+**Symptom**: After recovering the cluster from an etcd snapshot restore, newly created pods
+(and existing Pending pods) never leave `Pending` state. The kube-scheduler logs only show
+one pod being retried every 5 minutes and no other scheduling activity.
+
+**Root cause**: The kube-scheduler's leader lease in etcd was held by an old container
+instance that no longer exists. The new scheduler container cannot acquire the lease until
+the old one expires (up to 137 seconds). If the old container exited cleanly, the lease is
+never renewed and the new scheduler is blocked.
+
+**Fix**:
+```bash
+export KUBECONFIG=~/generated_assets/twonode/auth/kubeconfig
+
+# Check the current lease holder
+oc get lease kube-scheduler -n openshift-kube-scheduler \
+  -o jsonpath='Holder: {.spec.holderIdentity}{"\n"}'
+
+# Delete the stale lease — the active scheduler acquires it within ~15 seconds
+oc delete lease kube-scheduler -n openshift-kube-scheduler
+
+# Verify new leader acquired (holderIdentity will change)
+sleep 15
+oc get lease kube-scheduler -n openshift-kube-scheduler \
+  -o jsonpath='New holder: {.spec.holderIdentity}{"\n"}'
+```
+
+All pending pods will begin scheduling within seconds of the new leader acquiring the lease.
 
 ---
 

@@ -13,6 +13,9 @@ pull_secret_path: ~/pull-secret.json
 ssh_public_key_path: ~/.ssh/openshift-twonode-ed25519.pub
 
 # ── Cluster identity ─────────────────────────────────────────────────────────
+# REQUIRED: change cluster_name and base_domain to your own values.
+# base_domain must be a real domain you control (Route53 or resolvable via your DNS).
+# "example.com" is a placeholder and will not work for external access.
 cluster_name: twonode
 base_domain: example.com
 

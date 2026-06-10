@@ -1,0 +1,17 @@
+---
+# OLM Subscription for the Red Hat cert-manager Operator.
+# Channel: stable-v1 tracks the latest stable 1.x release.
+# installPlanApproval: Manual is recommended for TNF clusters running
+# featureSet: TechPreviewNoUpgrade to avoid unexpected automatic upgrades.
+# Change to Automatic if you want hands-off patch updates.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: openshift-cert-manager-operator
+spec:
+  channel: stable-v1
+  installPlanApproval: Manual
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

@@ -42,13 +42,17 @@ For a full explanation including the TNF vs TNA comparison, see [docs/architectu
 
 - A bastion host with `ansible`, `openshift-install`, `oc`, and `git`
 - Two physical servers (or KVM VMs) with Redfish-capable BMCs (or `sushy-tools` for KVM)
-- Pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
+- Pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret) saved to `~/pull-secret.json`
+- **KVM path only**: AWS credentials in `~/.aws/credentials` (Route53 is used for external DNS)
+- **KVM path only**: Your host's private IP — run `ip route get 1 | awk '{print $7; exit}'` to find it
+
+> **Choosing your path**: If you are on **IBM Cloud KVM** (or any single host running KVM), follow `docs/kvm-developer-guide.md`. If you are deploying to **physical bare-metal servers**, follow `docs/deployment-guide.md`.
 
 ### 1. Clone this repository and the upstream tooling
 
 ```bash
 git clone https://github.com/tosin2013/openshift-agent-install
-git clone https://github.com/YOUR_ORG/openshift-twonode-guide
+git clone https://github.com/tosin2013/openshift-twonode-guide
 
 # Copy the two-node-fencing example into the openshift-agent-install clusters directory
 cp -r openshift-twonode-guide/examples/two-node-fencing openshift-agent-install/clusters/
@@ -116,12 +120,20 @@ Each demo directory contains a `README.md` with objectives, prerequisites, step-
 
 ## KVM Development Environment
 
-You do not need physical bare-metal servers to work with this repository. Using KVM with `sushy-tools` as a Redfish emulator, you can run the full deployment and all demos on a single host machine. The automated deployment script handles everything end-to-end — including the IBM Cloud NAT path, Route53 DNS, HAProxy, and an etcd quorum recovery step that resolves a deterministic 2-node bootstrap race condition.
+You do not need physical bare-metal servers to work with this repository. Using KVM with `sushy-tools` as a Redfish emulator, you can run the full deployment and all demos on a single host machine.
 
-See **[docs/kvm-developer-guide.md](docs/kvm-developer-guide.md)** for the full step-by-step guide.
+> **Before running the deploy script**, you must complete several setup steps: host bootstrap, disk formatting, DNS configuration, and a ~10-minute **manual VyOS router console session** via Cockpit. The deploy script itself then runs unattended for ~60 minutes.
+>
+> See **[docs/kvm-developer-guide.md](docs/kvm-developer-guide.md)** for the complete step-by-step walkthrough.
 
 ```bash
-# One-command deployment (IBM Cloud KVM path)
+# Step 1 of N — bootstrap the host (idempotent, ~5 min)
+export HOST_PRIVATE_IP="$(ip route get 1 | awk '{print $7; exit}')"
+sudo -E bash scripts/bootstrap.sh
+
+# After completing DNS setup and VyOS router steps (see kvm-developer-guide.md):
+
+# Final step — deploy the cluster (~60 min, unattended after VyOS is ready)
 sudo bash scripts/deploy-tnf-kvm.sh
 ```
 

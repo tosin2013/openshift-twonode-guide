@@ -1,0 +1,53 @@
+---
+# Wildcard Certificate for *.apps.{CLUSTER_NAME}.{BASE_DOMAIN}
+#
+# This Certificate covers all Route hostnames in the cluster under the apps
+# subdomain (e.g., console-openshift-console.apps.tnf.example.com).
+#
+# REQUIRED before applying:
+#   1. Replace REPLACE_ME_CLUSTER_NAME with your cluster name (e.g., tnf, tna-cluster)
+#   2. Replace REPLACE_ME_BASE_DOMAIN with your base domain (e.g., example.com)
+#   3. Ensure the letsencrypt-production ClusterIssuer is Ready before applying
+#
+# To use staging issuer first, change issuerRef.name to letsencrypt-staging
+#
+# Verify with:
+#   oc get certificate wildcard-apps-cert -n openshift-ingress
+#   oc describe certificaterequest -n openshift-ingress
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-apps-cert
+  namespace: openshift-ingress
+spec:
+  secretName: wildcard-apps-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  duration: 2160h   # 90 days (Let's Encrypt maximum)
+  renewBefore: 720h # Renew 30 days before expiry
+  dnsNames:
+    - "*.apps.REPLACE_ME_CLUSTER_NAME.REPLACE_ME_BASE_DOMAIN"
+---
+# Optional: API server certificate
+# Apply separately after wildcard cert is confirmed working.
+# After issuance, patch the API server ingress config to use this secret:
+#   oc patch apiserver cluster --type=merge \
+#     -p '{"spec":{"servingCerts":{"namedCertificates":[{"names":
+#     ["api.REPLACE_ME_CLUSTER_NAME.REPLACE_ME_BASE_DOMAIN"],
+#     "servingCertificate":{"name":"api-cert-tls"}}]}}}'
+#
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: api-cert
+#   namespace: openshift-config
+# spec:
+#   secretName: api-cert-tls
+#   issuerRef:
+#     name: letsencrypt-production
+#     kind: ClusterIssuer
+#   duration: 2160h
+#   renewBefore: 720h
+#   dnsNames:
+#     - "api.REPLACE_ME_CLUSTER_NAME.REPLACE_ME_BASE_DOMAIN"

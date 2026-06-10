@@ -134,14 +134,54 @@ before reaching the condition-update code path.
 
 ---
 
+## ⚠ Incident-Driven Constraint (2026-06-09)
+
+**Symptom**: After `update-csi-resources.sh` was run, `rook-ceph-mon-a`,
+`rook-ceph-osd-1`, and `rook-ceph-mds-a` remained `Pending` on node1. Node1 was at
+**98% CPU requested** despite the CSI driver patch being applied.
+
+**Root cause**: Stale `Error`-state CSI controller pods retain their CPU reservations
+from before the patch. The new lower-resource replacement pods cannot schedule until
+the old pods are deleted. The script must delete stale pods after patching.
+
+**Additional gap**: `HEALTH_OK` from the `CephCluster` CR does not confirm all ODF pods
+are scheduled. A Ceph cluster can report `HEALTH_OK` with only a subset of its pods
+running (e.g., one OSD instead of two). The preflight check must verify pod count, not
+just Ceph health.
+
+**New constraint**: After running `update-csi-resources.sh`, always explicitly delete
+Error/CrashLoopBackOff CSI controller pods to release stale reservations.
+
+See: `docs/hardening/odf-csi-cpu-starvation-v4.21-2026-06-09.md`
+
+---
+
 ## Implementation Plan
 
 ```bash
-# After StorageCluster is in Progressing/Ready state and OSDs are up:
+# Step 1: Patch CSI driver resource requests
 bash scripts/update-csi-resources.sh
 
-# Verify CSI pods are now Running on both nodes:
-oc get pods -n openshift-storage | grep ctrlplugin
+# Step 2: Delete stale Error/CrashLoop CSI pods so replacements can schedule
+# (stale pods retain CPU reservations even after driver CR is patched)
+oc get pods -n openshift-storage --no-headers | \
+  grep -E "ctrlplugin|nodeplugin" | \
+  grep -v "Running" | \
+  awk '{print $1}' | \
+  xargs -r oc delete pod -n openshift-storage --force --grace-period=0
+
+# Step 3: Wait for all ODF pods to reach Running (up to 5 minutes)
+watch -n10 "oc get pods -n openshift-storage --no-headers | grep -v 'Running\|Completed'"
+# Expected: no output
+
+# Step 4: Verify expected pod count (not just health string)
+oc get pods -n openshift-storage --no-headers | grep -c "Running"
+# Expected: ≥ 20 pods Running
+
+# Step 5: Confirm Ceph health
+oc get cephcluster -n openshift-storage \
+  -o jsonpath='{.items[0].status.ceph.health}{"\n"}'
+# Expected: HEALTH_OK
 ```
 
 ---

@@ -73,6 +73,13 @@ nav:
       - 005 Local Storage: adrs/005-local-storage-over-odf-ceph.md
       - 006 OVNKubernetes: adrs/006-ovnkubernetes-network-plugin.md
       - 007 KVM sushy-tools: adrs/007-kvm-sushy-tools-dev-environment.md
+      - 008 ODF Pool Replica Strategy: adrs/008-odf-tnf-pool-replica-strategy.md
+      - 009 ODF Post-Install Tuning: adrs/009-odf-tnf-post-install-tuning.md
+      - 010 ODF mon-c Downstream Image: adrs/010-odf-tnf-mon-c-downstream-image.md
+      - 011 ODF Demo5 Fencing Procedure: adrs/011-odf-tnf-demo5-fencing-procedure.md
+      - 012 cert-manager Let's Encrypt: adrs/012-cert-manager-lets-encrypt.md
+  - Examples:
+      - cert-manager: examples/cert-manager/README.md
   - Deployment Records:
       - deployments/index.md
       - IBM Cloud KVM 2026-06-03: deployments/tnf-kvm-ibmcloud-2026-06-03.md

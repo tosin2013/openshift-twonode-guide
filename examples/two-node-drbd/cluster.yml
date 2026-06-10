@@ -19,8 +19,11 @@ use_site_configs: false
 pull_secret_path: ~/pull-secret.json
 ssh_public_key_path: ~/.ssh/openshift-twonode-ed25519.pub
 
+# REQUIRED: change cluster_name and base_domain to your own values.
+# base_domain must be a real domain you control (Route53 or resolvable via your DNS).
+# "example.com" is a placeholder and will not work for external access.
 cluster_name: twonode
-base_domain: sandbox3377.opentlc.com
+base_domain: example.com
 
 ocp_version: "4.22"
 
@@ -53,8 +56,8 @@ dns_servers:
   - 192.168.49.1
 
 dns_search_domains:
-  - twonode.sandbox3377.opentlc.com
-  - sandbox3377.opentlc.com
+  - twonode.example.com
+  - example.com
 
 ntp_servers:
   - 0.rhel.pool.ntp.org

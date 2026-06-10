@@ -15,6 +15,7 @@ This guide walks through every step needed to deploy a Two-Node OpenShift 4.22 c
 7. [Monitoring Installation](#7-monitoring-installation)
 8. [Post-Install Validation](#8-post-install-validation)
 9. [KVM vs Bare Metal — Differences Summary](#9-kvm-vs-bare-metal--differences-summary)
+10. [Post-Install Certificate Management](#10-post-install-certificate-management)
 
 ---
 
@@ -82,10 +83,6 @@ df -h
 
 # Check available RAM (need ~32 GB minimum, 64 GB recommended)
 free -h
-
-# Check memory with icm if available
-icm --help
-icm list  # shows memory allocation
 
 # Verify hardware virtualization is enabled
 grep -m1 -E "vmx|svm" /proc/cpuinfo && echo "Hardware virtualization: OK" || echo "ERROR: VT-x/AMD-V not found"
@@ -285,7 +282,19 @@ The configuration templates are in `clusters/two-node-fencing/` inside the `open
 vi clusters/two-node-fencing/cluster.yml
 ```
 
-Key parameters to set:
+**Minimum required changes** (the template will not work without these):
+
+| Parameter | Default | What to set |
+|---|---|---|
+| `cluster_name` | `twonode` | Your cluster name (no spaces, lowercase) |
+| `base_domain` | `example.com` | Your real DNS domain (must be resolvable) |
+| `pull_secret_path` | `~/pull-secret.json` | Path to your pull secret file |
+| `ssh_public_key_path` | `~/.ssh/openshift-twonode-ed25519.pub` | Path to your SSH public key |
+| `api_vips` | `192.168.49.253` | A free IP in your network |
+| `app_vips` | `192.168.49.252` | A free IP in your network |
+| `machine_network_cidrs` | `192.168.49.0/24` | Your cluster subnet |
+
+All parameters explained below:
 
 ```yaml
 # Cluster identity
@@ -659,3 +668,137 @@ curl http://$(oc get route hello -o jsonpath='{.spec.host}')
 | BMC network access | `localhost` or host IP | Dedicated BMC/IPMI network |
 | `disableCertificateVerification` in nodes.yml | `true` (sushy HTTP) | `false` for production BMCs with valid certs |
 | Fencing timeout | 10-15s (libvirt power-off is fast) | 30-60s (real BMC response varies) |
+
+---
+
+## 10. Post-Install Certificate Management
+
+By default, the cluster uses self-signed certificates for the API server and Ingress. This
+section covers installing the Red Hat cert-manager Operator and configuring Let's Encrypt
+to issue publicly-trusted TLS certificates for all cluster endpoints.
+
+> **Prerequisite**: Your `base_domain` must be a real, internet-resolvable domain you
+> control. The default `example.com` placeholder will not work with Let's Encrypt.
+
+For the full decision record, see [ADR-012](../adrs/012-cert-manager-lets-encrypt.md).
+For the complete manifest set and detailed steps, see
+[`examples/cert-manager/README.md`](../examples/cert-manager/README.md).
+
+### Why DNS-01 Challenge
+
+The TNF Ingress VIP (`192.168.49.252`) is on a private subnet — Let's Encrypt cannot
+reach it from the internet for HTTP-01 validation. DNS-01 validates domain ownership via
+a DNS TXT record, requiring only outbound HTTPS from the cluster to the DNS provider API.
+
+### 10.1 Install cert-manager Operator
+
+```bash
+# Create namespaces, OperatorGroup, and Subscription
+oc apply -f examples/cert-manager/namespace.yaml
+oc apply -f examples/cert-manager/operator-group.yaml
+oc apply -f examples/cert-manager/subscription.yaml
+
+# Approve the install plan (Manual approval mode)
+oc get installplan -n openshift-cert-manager-operator
+oc patch installplan <INSTALLPLAN_NAME> \
+  -n openshift-cert-manager-operator \
+  --type merge \
+  -p '{"spec":{"approved":true}}'
+
+# Wait for operator to be ready
+oc get csv -n openshift-cert-manager-operator --watch
+# PHASE: Succeeded
+
+# Verify cert-manager pods (operator deploys operands to the cert-manager namespace)
+oc get pods -n cert-manager
+# Expected: cert-manager-*, cert-manager-cainjector-*, cert-manager-webhook-*
+```
+
+### 10.2 Create DNS Provider Secret
+
+Choose the template for your DNS provider from `examples/cert-manager/dns-secret-examples/`
+and populate the credentials:
+
+```bash
+# Example for Cloudflare:
+cp examples/cert-manager/dns-secret-examples/cloudflare-secret.yaml /tmp/dns-secret.yaml
+# Edit: replace REPLACE_ME_CLOUDFLARE_API_TOKEN with your token
+oc apply -f /tmp/dns-secret.yaml
+```
+
+### 10.3 Test with Staging ClusterIssuer
+
+Always test with the staging issuer first to avoid Let's Encrypt production rate limits
+(5 duplicate certificates per week):
+
+```bash
+# Edit cluster-issuer-staging.yaml:
+#   1. Replace admin@REPLACE_ME_BASE_DOMAIN with your email
+#   2. Uncomment the solver for your DNS provider
+oc apply -f examples/cert-manager/cluster-issuer-staging.yaml
+
+# Verify issuer is Ready
+oc get clusterissuer letsencrypt-staging
+# READY: True
+```
+
+Apply the wildcard certificate pointing to the staging issuer:
+
+```bash
+# Edit wildcard-certificate.yaml:
+#   1. Replace REPLACE_ME_CLUSTER_NAME and REPLACE_ME_BASE_DOMAIN
+#   2. Set issuerRef.name: letsencrypt-staging
+oc apply -f /tmp/wildcard-certificate.yaml
+
+# Monitor issuance (DNS TXT propagation takes 1-5 minutes)
+oc get certificate wildcard-apps-cert -n openshift-ingress --watch
+# READY: True
+```
+
+### 10.4 Promote to Production
+
+Once staging succeeds:
+
+```bash
+# Apply production ClusterIssuer
+oc apply -f examples/cert-manager/cluster-issuer-production.yaml
+
+# Update certificate to use production issuer
+# Edit: change issuerRef.name to letsencrypt-production
+oc apply -f /tmp/wildcard-certificate.yaml
+
+# Force re-issuance
+oc delete certificaterequest -n openshift-ingress \
+  $(oc get certificaterequest -n openshift-ingress -o name)
+
+# Wait for production cert
+oc get certificate wildcard-apps-cert -n openshift-ingress --watch
+# READY: True
+```
+
+### 10.5 Configure Cluster Ingress
+
+```bash
+# Set the wildcard cert as the default certificate for all Routes
+oc patch ingresscontroller default \
+  -n openshift-ingress-operator \
+  --type merge \
+  -p '{"spec":{"defaultCertificate":{"name":"wildcard-apps-tls"}}}'
+
+# Verify
+oc get certificate -A
+oc get ingresscontroller default -n openshift-ingress-operator \
+  -o jsonpath='{.spec.defaultCertificate}'
+```
+
+### 10.6 Annotate Demo Routes (Optional)
+
+To apply per-Route certificates instead of the shared wildcard:
+
+```bash
+oc annotate route <route-name> -n <namespace> \
+  cert-manager.io/cluster-issuer=letsencrypt-production
+```
+
+> **Tip**: The wildcard approach is preferred for TNF clusters because it requires a
+> single ACME DNS-01 challenge instead of one challenge per Route.
